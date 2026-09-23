@@ -1,6 +1,6 @@
 {
-  "name": "Todoist Sections Card",
-  "filename": "todoist-sections-card.js",
+  "name": "Natural Language To-do Card",
+  "filename": "natural-language-todo-card.js",
   "render_readme": true,
   "homeassistant": "2024.8.0"
 }

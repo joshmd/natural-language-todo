@@ -1,6 +1,6 @@
 # =============================================================================
-# Todoist bridge for todoist-sections-card
-# https://github.com/joshmd/todoist-sections-card
+# Todoist bridge for the Natural Language To-do Card
+# https://github.com/joshmd/natural-language-Todo
 # -----------------------------------------------------------------------------
 # Talks to the Todoist API v1 directly so the card gets sections, section IDs
 # and Todoist's own natural-language date parsing. Runs alongside the core

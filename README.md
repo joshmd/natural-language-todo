@@ -1,10 +1,10 @@
-# Todoist Sections Card
+# Natural Language To-do Card
 
-[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=todoist-sections-card&category=plugin)
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-Todo&category=plugin)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories/)
-[![Validate](https://github.com/joshmd/todoist-sections-card/actions/workflows/validate.yml/badge.svg)](https://github.com/joshmd/todoist-sections-card/actions/workflows/validate.yml)
+[![Validate](https://github.com/joshmd/natural-language-Todo/actions/workflows/validate.yml/badge.svg)](https://github.com/joshmd/natural-language-Todo/actions/workflows/validate.yml)
 
-A Home Assistant dashboard card for Todoist that:
+A Home Assistant dashboard card for to-do lists that:
 
 - shows your project's **sections**
 - adds items with **Todoist's own natural-language parser** (`milk tomorrow 5pm /Bakery`)
@@ -13,8 +13,10 @@ A Home Assistant dashboard card for Todoist that:
 
 <img src="images/screenshot.png" alt="The card showing a Shopping list grouped into Fruit & veg, Bakery and Household sections, with due-date chips and a Completed group" width="400">
 
+Version 1 works with **Todoist**. Support for any Home Assistant to-do list (Local To-do, Google Tasks, CalDAV and others) is planned for version 2, and existing setups will keep working when it arrives.
+
 > [!IMPORTANT]
-> The card has **two parts**, and you need both:
+> With Todoist, the card has **two parts**, and you need both:
 >
 > 1. **The card**, installed by HACS.
 > 2. **The bridge package** (`todoist_bridge.yaml`), which you copy into Home Assistant yourself. It talks to Todoist. HACS cannot install it for you.
@@ -41,16 +43,16 @@ You can keep the core Todoist integration. It still works for voice assistants, 
 
 1. Click this button to open the repository in HACS:
 
-   [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=todoist-sections-card&category=plugin)
+   [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-Todo&category=plugin)
 
    <details>
    <summary>If the button does not work</summary>
 
    1. Open **HACS** in Home Assistant.
    2. Select the three-dot menu (top right) → **Custom repositories**.
-   3. Repository: `https://github.com/joshmd/todoist-sections-card`
+   3. Repository: `https://github.com/joshmd/natural-language-Todo`
    4. Type: **Dashboard**
-   5. Select **Add**, then search HACS for **Todoist Sections Card**.
+   5. Select **Add**, then search HACS for **Natural Language To-do Card**.
 
    </details>
 
@@ -62,10 +64,10 @@ HACS registers the dashboard resource for you.
 <details>
 <summary>Install the card manually instead</summary>
 
-1. Download `todoist-sections-card.js` from the [latest release](https://github.com/joshmd/todoist-sections-card/releases/latest).
-2. Copy it to `/config/www/todoist-sections-card.js`.
+1. Download `natural-language-todo-card.js` from the [latest release](https://github.com/joshmd/natural-language-Todo/releases/latest).
+2. Copy it to `/config/www/natural-language-todo-card.js`.
 3. Go to **Settings** → **Dashboards** → three-dot menu → **Resources** → **Add resource**:
-   - URL: `/local/todoist-sections-card.js?v=0.1.0`
+   - URL: `/local/natural-language-todo-card.js?v=0.1.0`
    - Resource type: **JavaScript module**
 4. Reload your browser. Change the `?v=` number whenever you update the file, or browsers keep using the old copy.
 
@@ -124,10 +126,10 @@ You can also find `project_id` in any entry of the `results` attribute of `senso
 
 ### Step 4: Add the card to a dashboard
 
-Edit a dashboard, select **Add card**, search for **Todoist Sections Card**, then switch to the code editor and set your `project_id`:
+Edit a dashboard, select **Add card**, search for **Natural Language To-do Card**, then switch to the code editor and set your `project_id`:
 
 ```yaml
-type: custom:todoist-sections-card
+type: custom:natural-language-todo-card
 title: Shopping
 project_id: 6Jf8VQXxpwv59GRH
 count_suffix: to get
@@ -203,6 +205,8 @@ The card's scripts then refuse to add to, complete or reopen tasks in any other 
 | `done_script` | `script.todoist_bridge_set_done` | |
 
 Collapsed and expanded sections are remembered per device. Dates follow your Home Assistant language setting.
+
+The card's earlier name, `custom:todoist-sections-card`, still works.
 
 ## Adding items
 

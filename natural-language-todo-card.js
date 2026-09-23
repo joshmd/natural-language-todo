@@ -1,9 +1,10 @@
 /*
- * Todoist Sections Card for Home Assistant
- * ----------------------------------------
- * A Todoist list card with sections, natural-language quick add, a collapsible
+ * Natural Language To-do Card for Home Assistant
+ * https://github.com/joshmd/natural-language-Todo
+ * ----------------------------------------------
+ * A to-do list card with sections, natural-language quick add, a collapsible
  * add bar that closes after a period of no typing, optional completed items
- * and per-section hiding.
+ * and per-section hiding. Version 1 reads Todoist through the bridge package.
  *
  * Data comes from the todoist_bridge package (REST sensors + scripts against
  * the Todoist API v1). The card never holds your API token.
@@ -114,7 +115,7 @@ const STYLES = `
   @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
 
-class TodoistSectionsCard extends HTMLElement {
+class NaturalLanguageTodoCard extends HTMLElement {
   static getStubConfig() {
     return { title: 'Shopping', project_id: '' };
   }
@@ -135,20 +136,20 @@ class TodoistSectionsCard extends HTMLElement {
 
   setConfig(config) {
     if (!config || !config.project_id) {
-      throw new Error('todoist-sections-card: project_id is required');
+      throw new Error('natural-language-todo-card: project_id is required');
     }
     const c = { ...DEFAULTS, ...config };
     for (const key of ['hide_sections', 'collapsed_sections']) {
-      if (!Array.isArray(c[key])) throw new Error(`todoist-sections-card: ${key} must be a list`);
+      if (!Array.isArray(c[key])) throw new Error(`natural-language-todo-card: ${key} must be a list`);
     }
     if (!DUE_DISPLAY.includes(c.due_display)) {
-      throw new Error(`todoist-sections-card: due_display must be one of ${DUE_DISPLAY.join(', ')}`);
+      throw new Error(`natural-language-todo-card: due_display must be one of ${DUE_DISPLAY.join(', ')}`);
     }
     c.project_id = String(c.project_id);
     c.add_timeout = Math.max(0, Number(c.add_timeout) || 0);
     c.completed_limit = Math.max(1, Number(c.completed_limit) || DEFAULTS.completed_limit);
     this._config = c;
-    this._storeKey = `todoist-sections-card:${c.project_id}`;
+    this._storeKey = `natural-language-todo-card:${c.project_id}`;
     this._collapsed = this._loadCollapsed();
     this._built = false;
     this._sig = '';
@@ -654,14 +655,19 @@ class TodoistSectionsCard extends HTMLElement {
   }
 }
 
-if (!customElements.get('todoist-sections-card')) {
-  customElements.define('todoist-sections-card', TodoistSectionsCard);
+if (!customElements.get('natural-language-todo-card')) {
+  customElements.define('natural-language-todo-card', NaturalLanguageTodoCard);
   window.customCards = window.customCards || [];
   window.customCards.push({
-    type: 'todoist-sections-card',
-    name: 'Todoist Sections Card',
-    description: 'Todoist list with sections, natural-language quick add and optional completed items.',
-    documentationURL: 'https://github.com/joshmd/todoist-sections-card',
+    type: 'natural-language-todo-card',
+    name: 'Natural Language To-do Card',
+    description: 'To-do list with sections, natural-language quick add and optional completed items.',
+    documentationURL: 'https://github.com/joshmd/natural-language-Todo',
   });
-  console.info(`%c TODOIST-SECTIONS-CARD %c v${CARD_VERSION} `, 'background:#e0585f;color:#fff', 'background:#444;color:#fff');
+  console.info(`%c NATURAL-LANGUAGE-TODO-CARD %c v${CARD_VERSION} `, 'background:#e0585f;color:#fff', 'background:#444;color:#fff');
+}
+
+// Earlier name, kept so dashboards using custom:todoist-sections-card keep working.
+if (!customElements.get('todoist-sections-card')) {
+  customElements.define('todoist-sections-card', class extends NaturalLanguageTodoCard {});
 }
