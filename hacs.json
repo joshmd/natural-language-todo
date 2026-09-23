@@ -1,0 +1,6 @@
+{
+  "name": "Todoist Sections Card",
+  "filename": "todoist-sections-card.js",
+  "render_readme": true,
+  "homeassistant": "2024.8.0"
+}

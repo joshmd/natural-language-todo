@@ -1,0 +1,280 @@
+# =============================================================================
+# Todoist bridge for todoist-sections-card
+# https://github.com/joshmd/todoist-sections-card
+# -----------------------------------------------------------------------------
+# Talks to the Todoist API v1 directly so the card gets sections, section IDs
+# and Todoist's own natural-language date parsing. Runs alongside the core
+# Todoist integration, which stays in place for voice (todo.* entities).
+#
+# Requires in secrets.yaml:
+#   todoist_auth: "Bearer <your Todoist API token>"
+#
+# Entities created:
+#   sensor.todoist_tasks      active tasks              (poll 60 s)
+#   sensor.todoist_sections   sections                  (poll 15 min)
+#   sensor.todoist_completed  tasks completed, last 7 d (poll 5 min, optional)
+#   script.todoist_bridge_add
+#   script.todoist_bridge_set_done
+#
+# Privacy:
+#   By default the sensors hold tasks from EVERY project in your Todoist
+#   account, and every Home Assistant user can read sensor attributes. To keep
+#   other projects out of Home Assistant, use single-project mode: add
+#   &project_id=YOUR_PROJECT_ID to the resource URLs marked below.
+#
+# Security:
+#   Every Home Assistant user can run scripts and rest_commands, so anyone
+#   with a Home Assistant login can add, complete or reopen Todoist tasks.
+#   IDs are sanitised so no call can reach any other Todoist endpoint.
+#   allowed_projects (in both scripts below) limits the card's scripts to the
+#   projects you list; it does not restrict direct rest_command calls.
+#
+# Limits:
+#   Each list endpoint is fetched with limit=200 and no pagination.
+#   Exclude these sensors from the recorder: the payload lives in attributes.
+# =============================================================================
+
+rest:
+  # --- Active tasks ----------------------------------------------------------
+  # Single-project mode: append &project_id=YOUR_PROJECT_ID
+  - resource: https://api.todoist.com/api/v1/tasks?limit=200
+    headers:
+      Authorization: !secret todoist_auth
+    scan_interval: 60
+    timeout: 15
+    sensor:
+      - name: Todoist Tasks
+        unique_id: todoist_bridge_tasks
+        icon: mdi:checkbox-marked-outline
+        # State = number of active tasks. Payload in the "results" attribute.
+        value_template: "{{ value_json.results | count }}"
+        json_attributes:
+          - results
+
+  # --- Sections (change rarely, so poll slowly) ------------------------------
+  # Single-project mode: append &project_id=YOUR_PROJECT_ID
+  - resource: https://api.todoist.com/api/v1/sections?limit=200
+    headers:
+      Authorization: !secret todoist_auth
+    scan_interval: 900
+    timeout: 15
+    sensor:
+      - name: Todoist Sections
+        unique_id: todoist_bridge_sections
+        icon: mdi:format-list-group
+        value_template: "{{ value_json.results | count }}"
+        json_attributes:
+          - results
+
+  # --- Recently completed (optional: delete this block if you never use
+  #     show_completed in the card) -----------------------------------------
+  - resource_template: >-
+      https://api.todoist.com/api/v1/tasks/completed/by_completion_date?limit=200&since={{
+      (utcnow() - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ') }}&until={{
+      utcnow().strftime('%Y-%m-%dT%H:%M:%SZ') }}
+    headers:
+      Authorization: !secret todoist_auth
+    scan_interval: 300
+    timeout: 15
+    sensor:
+      - name: Todoist Completed
+        unique_id: todoist_bridge_completed
+        icon: mdi:check-all
+        value_template: "{{ (value_json['items'] | default([])) | count }}"
+        json_attributes:
+          - items
+
+rest_command:
+  # Todoist's Quick Add parser: dates, times, recurrence, @labels, p1-p4.
+  # "| string" stops Home Assistant turning items such as "42" into numbers.
+  todoist_quick_add:
+    url: https://api.todoist.com/api/v1/tasks/quick
+    method: post
+    headers:
+      Authorization: !secret todoist_auth
+    content_type: application/json
+    payload: '{"text": {{ text | string | to_json }}}'
+    timeout: 15
+
+  # Move a task. Todoist accepts exactly one destination, so send the section
+  # when there is one (it implies the project), otherwise the project.
+  # Any Home Assistant user can call a rest_command directly, skipping the
+  # scripts' checks, so each URL strips everything except the characters a
+  # Todoist ID can contain. An ID can never add path segments or a query.
+  todoist_move_task:
+    url: "https://api.todoist.com/api/v1/tasks/{{ task_id | string | regex_replace('[^A-Za-z0-9_-]', '') }}/move"
+    method: post
+    headers:
+      Authorization: !secret todoist_auth
+    content_type: application/json
+    payload: >-
+      {% if section_id %}{"section_id": {{ section_id | string | to_json }}}
+      {% else %}{"project_id": {{ project_id | string | to_json }}}{% endif %}
+    timeout: 15
+
+  todoist_close_task:
+    url: "https://api.todoist.com/api/v1/tasks/{{ task_id | string | regex_replace('[^A-Za-z0-9_-]', '') }}/close"
+    method: post
+    headers:
+      Authorization: !secret todoist_auth
+    timeout: 15
+
+  todoist_reopen_task:
+    url: "https://api.todoist.com/api/v1/tasks/{{ task_id | string | regex_replace('[^A-Za-z0-9_-]', '') }}/reopen"
+    method: post
+    headers:
+      Authorization: !secret todoist_auth
+    timeout: 15
+
+script:
+  # Called by the card. Quick Add parses the text, then the task is moved to
+  # the card's project/section, so the card never depends on #Project syntax.
+  todoist_bridge_add:
+    alias: Todoist bridge - add task
+    mode: queued
+    max: 20
+    fields:
+      text:
+        description: Task text, natural language allowed (section already stripped)
+        required: true
+        selector:
+          text:
+      project_id:
+        description: Todoist project ID
+        required: true
+        selector:
+          text:
+      section_id:
+        description: Todoist section ID (optional)
+        selector:
+          text:
+    sequence:
+      # Set here, inside the sequence, so a caller cannot override it.
+      # Empty list = any project. Example: ["6Jf8VQXxpwv59GRH"]
+      - variables:
+          allowed_projects: []
+          # A Todoist ID is letters, digits, "_" or "-". Anything else is refused.
+          pid: "{{ project_id | default('') | string }}"
+          sid: "{{ section_id | default('', true) | string }}"
+      - if:
+          - condition: template
+            value_template: >-
+              {% set p = pid | string %}{% set s = sid | string %}
+              {{ p == '' or p | length > 64
+                 or p | regex_replace('[A-Za-z0-9_-]', '') != ''
+                 or s | length > 64
+                 or s | regex_replace('[A-Za-z0-9_-]', '') != '' }}
+        then:
+          - stop: "Invalid project or section ID"
+            error: true
+      - if:
+          - condition: template
+            value_template: "{{ allowed_projects | count > 0 and (pid | string) not in allowed_projects }}"
+        then:
+          - stop: "Project {{ pid }} is not in allowed_projects"
+            error: true
+      - if:
+          - condition: template
+            value_template: "{{ (text | default('') | string | trim) == '' }}"
+        then:
+          - stop: "Task text is empty"
+            error: true
+      - action: rest_command.todoist_quick_add
+        data:
+          text: "{{ text }}"
+        response_variable: created
+      - if:
+          - condition: template
+            value_template: "{{ created.status != 200 or created.content.id is not defined }}"
+        then:
+          - stop: "Todoist rejected the task (HTTP {{ created.status }})"
+            error: true
+      - action: rest_command.todoist_move_task
+        data:
+          task_id: "{{ created.content.id }}"
+          project_id: "{{ pid | string }}"
+          section_id: "{{ sid | string }}"
+        response_variable: moved
+      - action: homeassistant.update_entity
+        target:
+          entity_id: sensor.todoist_tasks
+      - variables:
+          result:
+            id: "{{ created.content.id }}"
+            content: "{{ created.content.content }}"
+            due: "{{ created.content.due.string if created.content.due else '' }}"
+            moved: "{{ moved.status in [200, 204] }}"
+      - stop: done
+        response_variable: result
+
+  todoist_bridge_set_done:
+    alias: Todoist bridge - complete or reopen task
+    mode: queued
+    max: 20
+    fields:
+      task_id:
+        required: true
+        selector:
+          text:
+      done:
+        required: true
+        selector:
+          boolean:
+    sequence:
+      # Set here, inside the sequence, so a caller cannot override it.
+      # Keep in step with allowed_projects in todoist_bridge_add.
+      - variables:
+          allowed_projects: []
+          tid: "{{ task_id | default('') | string }}"
+      - if:
+          - condition: template
+            value_template: >-
+              {% set t = tid | string %}
+              {{ t == '' or t | length > 64
+                 or t | regex_replace('[A-Za-z0-9_-]', '') != '' }}
+        then:
+          - stop: "Invalid task ID"
+            error: true
+      # With an allow-list, the task must be one the sensors show in an
+      # allowed project.
+      - if:
+          - condition: template
+            value_template: >-
+              {% set pool = (state_attr('sensor.todoist_tasks', 'results') or [])
+                 + (state_attr('sensor.todoist_completed', 'items') or []) %}
+              {% set ns = namespace(ok=false) %}
+              {% for t in pool %}
+                {% if t.project_id | string in allowed_projects
+                   and (tid | string) in [t.id | default('') | string, t.task_id | default('') | string] %}
+                  {% set ns.ok = true %}
+                {% endif %}
+              {% endfor %}
+              {{ allowed_projects | count > 0 and not ns.ok }}
+        then:
+          - stop: "Task {{ tid }} is not in an allowed project"
+            error: true
+      - if:
+          - condition: template
+            value_template: "{{ done | bool }}"
+        then:
+          - action: rest_command.todoist_close_task
+            data:
+              task_id: "{{ tid }}"
+            response_variable: resp
+        else:
+          - action: rest_command.todoist_reopen_task
+            data:
+              task_id: "{{ tid }}"
+            response_variable: resp
+      - if:
+          - condition: template
+            value_template: "{{ resp.status not in [200, 204] }}"
+        then:
+          - stop: "Todoist returned HTTP {{ resp.status }}"
+            error: true
+      - action: homeassistant.update_entity
+        target:
+          entity_id:
+            - sensor.todoist_tasks
+            - sensor.todoist_completed
+        continue_on_error: true
