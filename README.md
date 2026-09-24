@@ -3,6 +3,7 @@
 [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-Todo&category=plugin)
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories/)
 [![Validate](https://github.com/joshmd/natural-language-Todo/actions/workflows/validate.yml/badge.svg)](https://github.com/joshmd/natural-language-Todo/actions/workflows/validate.yml)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=000000)](https://www.buymeacoffee.com/joshmd)
 
 A Home Assistant dashboard card for to-do lists that:
 
