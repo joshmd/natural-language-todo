@@ -628,7 +628,7 @@ class TodoSource {
           due,
           recurring: false,
           order: i,
-          completedAt: null,
+          completedAt: it.completed || null,
         };
         (it.status === 'completed' ? completed : items).push(norm);
       });
@@ -692,7 +692,14 @@ class TodoSource {
         data.due_date_string = parsed.dueString;
         data.due_date_lang = 'en';
       }
-      await hass.callService('todoist', 'new_task', data);
+      try {
+        await hass.callService('todoist', 'new_task', data);
+      } catch (err) {
+        // The Todoist action looks the project up on every call, so a broken
+        // Todoist connection shows up here as an unhelpful server error.
+        const msg = err?.message || 'the request failed';
+        throw new Error(`${msg}. If this keeps happening, check the Todoist integration in Settings → Devices & services`);
+      }
     } else {
       const data = { item: parsed.text };
       const f = this._features(hass, entity);

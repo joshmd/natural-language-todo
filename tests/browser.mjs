@@ -221,7 +221,7 @@ await run('Todoist list via core integration: new_task with section, labels, pri
   });
   assert.ok(out.preview.some((c) => c.includes('Bakery')));
   assert.ok(out.preview.includes('@home') && out.preview.includes('p1'));
-  assert.match(out.err, /Could not add glue: Invalid section name/);
+  assert.match(out.err, /Could not add glue: Invalid section name\. If this keeps happening, check the Todoist integration/);
   assert.equal(out.input, 'glue /Garage');
   assert.equal(out.hint, 'Try: milk tomorrow 5pm /Section @label');
 });
@@ -277,6 +277,25 @@ await run('several lists become sections; /Name picks the list', async (page) =>
   assert.ok(out.toBakery[1].due_date || out.toBakery[1].due_datetime);
   assert.deepEqual(out.defaultPreview, ['Fruit & veg']);
   assert.equal(out.toDefault[2].entity_id, 'todo.fruit');
+});
+
+await run('completed items are sorted newest first', async (page) => {
+  const out = await page.evaluate(async () => {
+    const hass = makeHass({
+      states: { 'todo.shopping': { state: '0', last_updated: '1', attributes: LOCAL } },
+      items: {
+        'todo.shopping': [
+          { uid: 'a', summary: 'Older', status: 'completed', completed: '2026-09-20T10:00:00+00:00' },
+          { uid: 'b', summary: 'Newest', status: 'completed', completed: '2026-09-24T10:00:00+00:00' },
+          { uid: 'c', summary: 'Middle', status: 'completed', completed: '2026-09-22T10:00:00+00:00' },
+        ],
+      },
+    });
+    mount({ entity: 'todo.shopping', show_completed: true, completed_collapsed: false, completed_limit: 2 }, hass);
+    await tick();
+    return texts('.item.done .text');
+  });
+  assert.deepEqual(out, ['Newest', 'Middle']);
 });
 
 await run('older Home Assistant falls back to polling todo.get_items', async (page) => {

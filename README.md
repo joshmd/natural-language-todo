@@ -206,6 +206,7 @@ Collapsed and expanded sections are remembered per device. The card's earlier na
 | "todo.… was not found" | Check the entity ID in **Settings → Devices & services → Entities**. |
 | No + button | The list doesn't allow adding items. Some integrations provide read-only lists. |
 | Dates stay in the item text | The list doesn't support due dates, or the phrase isn't one the card knows. The preview shows what it understood. |
+| Todoist: a server error or "unknown error" when adding | The Todoist integration can't reach Todoist. Look in **Settings → System → Logs** for Todoist errors such as `401 Unauthorized`, and reload or re-authenticate the integration in **Settings → Devices & services**. |
 | Todoist: an error about the section | That section doesn't exist in the Todoist project. Check the spelling, or use quotes for names with spaces. |
 | Todoist: an error about the project name | You've renamed the list in Home Assistant. Set `todoist_project:` to the name used in Todoist. |
 | "Custom element doesn't exist" | Reload the browser. With a manual install, check the resource URL and type. |
