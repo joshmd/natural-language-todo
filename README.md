@@ -5,42 +5,37 @@
 [![Validate](https://github.com/joshmd/natural-language-Todo/actions/workflows/validate.yml/badge.svg)](https://github.com/joshmd/natural-language-Todo/actions/workflows/validate.yml)
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=000000)](https://www.buymeacoffee.com/joshmd)
 
-A Home Assistant dashboard card for to-do lists that:
+A Home Assistant dashboard card for your to-do lists that:
 
-- shows your project's **sections**
-- adds items with **Todoist's own natural-language parser** (`milk tomorrow 5pm /Bakery`)
+- adds items the way you'd say them: `milk tomorrow 5pm /Bakery`
+- groups items into **sections** you can collapse or hide
 - keeps the add bar tucked away until you need it
-- lets you **show or hide completed items and individual sections**
+- can show recently **completed** items
+
+It works with **any Home Assistant to-do list**: Local To-do, Todoist, Google Tasks, CalDAV, the Shopping list and others.
 
 <img src="images/screenshot.png" alt="The card showing a Shopping list grouped into Fruit & veg, Bakery and Household sections, with due-date chips and a Completed group" width="400">
 
-Version 1 works with **Todoist**. Support for any Home Assistant to-do list (Local To-do, Google Tasks, CalDAV and others) is planned for version 2, and existing setups will keep working when it arrives.
+## Choose your setup
 
-> [!IMPORTANT]
-> With Todoist, the card has **two parts**, and you need both:
->
-> 1. **The card**, installed by HACS.
-> 2. **The bridge package** (`todoist_bridge.yaml`), which you copy into Home Assistant yourself. It talks to Todoist. HACS cannot install it for you.
+| Setup | What you need | Sections | Understands |
+|---|---|---|---|
+| **[1. Any to-do list](#setup-1-any-to-do-list)** | Just this card | Show several lists in one card, one section each | Dates and times, if the list supports them |
+| **[2. Todoist, with your existing integration](#setup-2-todoist-with-your-existing-integration)** | This card and the core [Todoist integration](https://www.home-assistant.io/integrations/todoist/) | Add into a Todoist section with `/Section`. Items are not grouped by section | Dates, times, repeats (`every 2 months`), `@labels`, `p1`–`p4` |
+| **[3. Todoist bridge](docs/todoist-bridge.md)** (advanced) | This card and a YAML package with your Todoist API token | Real Todoist sections, grouped | Todoist's own Quick Add parser |
 
-## Why a separate bridge?
+Setups 1 and 2 need **no YAML and no API token**. The card uses Home Assistant's own to-do lists and actions.
 
-The core Todoist integration exposes each project as a `todo` entity, but Home Assistant's to-do model has no sections. The bridge is a small YAML package of REST sensors and scripts that talk to the Todoist API v1 directly, so sections come through intact.
-
-Your API token stays in `secrets.yaml` on your Home Assistant server. The card runs in your browser and never sees it.
-
-You can keep the core Todoist integration. It still works for voice assistants, which use `todo` entities.
+A companion integration is planned that adds grouped Todoist sections to setup 2, set up entirely in **Settings → Devices & services**.
 
 ## Requirements
 
 - Home Assistant **2024.8** or newer
 - [HACS](https://hacs.xyz), unless you install manually
-- A Todoist API token: Todoist → **Settings** → **Integrations** → **Developer** → **Copy API token**
 
 ---
 
-## Installation
-
-### Step 1: Install the card with HACS
+## Install the card
 
 1. Click this button to open the repository in HACS:
 
@@ -68,7 +63,7 @@ HACS registers the dashboard resource for you.
 1. Download `natural-language-todo-card.js` from the [latest release](https://github.com/joshmd/natural-language-Todo/releases/latest).
 2. Copy it to `/config/www/natural-language-todo-card.js`.
 3. Go to **Settings** → **Dashboards** → three-dot menu → **Resources** → **Add resource**:
-   - URL: `/local/natural-language-todo-card.js?v=0.1.0`
+   - URL: `/local/natural-language-todo-card.js?v=0.2.0`
    - Resource type: **JavaScript module**
 4. Reload your browser. Change the `?v=` number whenever you update the file, or browsers keep using the old copy.
 
@@ -76,106 +71,89 @@ If you don't see **Resources**, turn on **Advanced mode** in your user profile.
 
 </details>
 
-### Step 2: Install the bridge package
+---
 
-You need to edit files in your `/config` folder. The **File editor** or **Studio Code Server** add-on works, or you can use Samba or SSH.
+## Setup 1: Any to-do list
 
-1. **Turn on packages.** If `configuration.yaml` doesn't already have this, add it:
+1. Edit a dashboard and select **Add card**.
+2. Search for **Natural Language To-do Card**. It starts with your first to-do list.
+3. Switch to the code editor to choose a different list or change options:
 
-   ```yaml
-   homeassistant:
-     packages: !include_dir_named packages
-   ```
-
-   If you already have a `homeassistant:` section, add the `packages:` line inside it rather than creating a second one.
-
-2. **Copy the package.** Download [`packages/todoist_bridge.yaml`](packages/todoist_bridge.yaml) and save it as `/config/packages/todoist_bridge.yaml`. Create the `packages` folder if it doesn't exist.
-
-3. **Add your token.** Add this line to `/config/secrets.yaml`, replacing the example with your own token. Keep the word `Bearer ` and the space after it:
-
-   ```yaml
-   todoist_auth: "Bearer 0123456789abcdef0123456789abcdef01234567"
-   ```
-
-4. **Keep the task list out of the history database.** The sensors hold every task as attributes. Add this to `configuration.yaml`, or merge it into your existing `recorder:` section:
-
-   ```yaml
-   recorder:
-     exclude:
-       entities:
-         - sensor.todoist_tasks
-         - sensor.todoist_sections
-         - sensor.todoist_completed
-   ```
-
-5. **Restart.** Go to **Developer tools** → **YAML** → **Check configuration**. If it passes, restart Home Assistant.
-
-6. **Check it works.** In **Developer tools** → **States**, find `sensor.todoist_tasks`. Its state should be a number, and it should have a `results` attribute.
-
-If you never want to show completed items, you can delete the third `rest:` block (`Todoist Completed`) from the package.
-
-### Step 3: Find your project ID
-
-Open the project in the Todoist web app. The ID is the last part of the address, after the final hyphen:
-
-```
-https://app.todoist.com/app/project/shopping-6Jf8VQXxpwv59GRH
-                                             ^^^^^^^^^^^^^^^^
+```yaml
+type: custom:natural-language-todo-card
+entity: todo.shopping_list
+title: Shopping
 ```
 
-You can also find `project_id` in any entry of the `results` attribute of `sensor.todoist_sections`.
+Don't have a list yet? Add the **Local To-do** integration in **Settings → Devices & services** to create one.
 
-### Step 4: Add the card to a dashboard
+### Several lists as sections
 
-Edit a dashboard, select **Add card**, search for **Natural Language To-do Card**, then switch to the code editor and set your `project_id`:
+List more than one to-do list and each becomes a section of the card. Type `/` and a list's name to add to that list. Without one, items go to the first list.
 
 ```yaml
 type: custom:natural-language-todo-card
 title: Shopping
-project_id: 6Jf8VQXxpwv59GRH
-count_suffix: to get
-show_completed: true
-hide_sections:
-  - Online
-collapsed_sections:
-  - Household
-add_timeout: 20
+entities:
+  - todo.fruit_and_veg
+  - todo.bakery
+  - entity: todo.household
+    name: Around the house   # optional: rename the section
 ```
+
+`bread tomorrow /Bakery` adds "bread" to the Bakery list, due tomorrow.
+
+### What the card understands
+
+The card works dates out itself, and only when the list can store them. A list without due dates keeps what you typed as it is. The preview under the box shows exactly what will be saved before you press Enter.
+
+| You type | Due |
+|---|---|
+| `today`, `tonight`, `tomorrow` | That day |
+| `friday`, `on monday` | The next one (today, if it's that day) |
+| `next friday`, `next week` | Friday or Monday of next week |
+| `weekend` | The coming Saturday |
+| `in 3 days`, `in two weeks`, `in a month` | That far ahead |
+| `25 dec`, `December 25th`, `3 march 2027`, `2026-12-25` | That date. Past dates without a year mean next year |
+| `25/12` | Day/month or month/day, following your Home Assistant date format |
+| `5pm`, `5:30pm`, `17:45`, `at noon` | That time, if the list supports times. A time on its own means today, or tomorrow if it has passed |
+
+To avoid mistakes:
+
+- **Short day names only count at the end:** `bin bags fri` is due Friday, but `sun cream` and `sat nav` stay as they are. The same goes for `25/12`, so `flour 1/2 kg` is left alone.
+- **Quotes switch parsing off:** `"back to the future" friday` adds "back to the future", due Friday.
+- **Repeats aren't supported** in Home Assistant's own lists. `every monday` stays in the text, and the preview says so. Use setup 2 or 3 with Todoist for repeating items.
+
+The words are English. Date and time display follows your Home Assistant language.
 
 ---
 
-## Privacy and security
+## Setup 2: Todoist, with your existing integration
 
-Please read this before you install.
-
-- **Your token stays on your server.** It lives in `secrets.yaml` and is only sent to `api.todoist.com`. The card never sees it.
-- **Every Home Assistant user can read the task list.** By default the sensors hold tasks from **every project in your Todoist account**, including shared projects. Every Home Assistant user can read them, and so can any app, token or AI assistant with read access to Home Assistant.
-- **Every Home Assistant user can change tasks.** Anyone with a Home Assistant login can add, complete and reopen tasks through the bridge.
-- **Other Todoist endpoints are blocked.** The bridge only accepts well-formed Todoist IDs and strips anything else from its URLs, so no call can reach another part of the Todoist API. It cannot delete tasks or projects.
-- **Don't expose these sensors to voice assistants.** Go to **Settings** → **Voice assistants** → **Expose** and make sure the three `sensor.todoist_*` entities are not exposed to Assist or other voice assistants.
-
-### Optional: only sync one project
-
-To keep other projects out of Home Assistant entirely, add `&project_id=YOUR_PROJECT_ID` to the end of the first two `resource:` URLs in the package:
+If you already use the core [Todoist integration](https://www.home-assistant.io/integrations/todoist/), each Todoist project is already a to-do list in Home Assistant. Point the card at one:
 
 ```yaml
-  - resource: https://api.todoist.com/api/v1/tasks?limit=200&project_id=6Jf8VQXxpwv59GRH
-  ...
-  - resource: https://api.todoist.com/api/v1/sections?limit=200&project_id=6Jf8VQXxpwv59GRH
+type: custom:natural-language-todo-card
+entity: todo.weekly_food_shop
+title: Food shop
 ```
 
-This also raises the 200-task limit to 200 tasks **per project**. In this mode every card must use that same project.
+The card spots that the list comes from Todoist and adds items through the integration's `todoist.new_task` action, so **Todoist parses the date**. On top of everything in setup 1, you can use:
 
-### Optional: limit the scripts to certain projects
+| You type | Result |
+|---|---|
+| `/Bakery` | Adds to the Bakery section. For a name with spaces, use quotes: `/"Corner shop"` |
+| `every 2 months`, `every monday`, `daily` | A repeating task |
+| `@home` | Adds the label "home" |
+| `p1` to `p4` | Priority, as in the Todoist app |
 
-Both scripts in the package start with `allowed_projects: []`. List the project IDs your cards use, in both scripts:
+Things to know:
 
-```yaml
-      - variables:
-          allowed_projects: ["6Jf8VQXxpwv59GRH"]
-```
-
-The card's scripts then refuse to add to, complete or reopen tasks in any other project. This protects against mistakes and casual misuse. It does not stop a determined Home Assistant user, who can call the underlying `rest_command` actions directly.
+- **Sections aren't shown as groups.** The Todoist integration doesn't tell Home Assistant which section a task is in, so the list shows ungrouped. The companion integration will fix this, or use [setup 3](docs/todoist-bridge.md) today.
+- **The card can't check section names.** The preview marks them "checked by Todoist". If the section doesn't exist, Todoist rejects the item, the card shows the error and your text is kept.
+- **New items take a moment to show up.** The card shows them straight away, and the Todoist integration confirms them on its next refresh.
+- **Completed items aren't available.** The Todoist integration only provides open tasks.
+- **Renamed lists:** the card finds the Todoist project by the list's name. If you've renamed the list in Home Assistant, set `todoist_project:` to the project's name in Todoist.
 
 ---
 
@@ -183,58 +161,54 @@ The card's scripts then refuse to add to, complete or reopen tasks in any other 
 
 | Option | Default | Description |
 |---|---|---|
-| `project_id` | **required** | Todoist project ID |
+| `entity` | | The to-do list to show (setups 1 and 2) |
+| `entities` | | Several lists, one section each. Each entry is an entity ID, or `entity:` plus an optional `name:` |
 | `title` | none | Card heading |
-| `show_completed` | `false` | Show a Completed group (needs `sensor.todoist_completed`) |
+| `show_completed` | `false` | Show a Completed group, if the list keeps completed items |
 | `completed_limit` | `10` | Maximum completed items shown |
 | `completed_collapsed` | `true` | Completed group starts collapsed |
-| `hide_sections` | `[]` | Sections to hide, by name or ID. Their tasks are hidden too |
+| `hide_sections` | `[]` | Sections to hide, by name or ID. Their items are hidden too |
 | `collapsed_sections` | `[]` | Sections collapsed until someone expands them |
-| `hide_empty_sections` | `true` | Hide sections with no open tasks |
-| `show_unsectioned` | `true` | Show tasks that are not in a section |
-| `unsectioned_title` | none | Give unsectioned tasks a header. Without one, they sit at the top |
+| `hide_empty_sections` | `true` | Hide sections with no open items |
+| `show_unsectioned` | `true` | Show items that are not in a section |
+| `unsectioned_title` | none | Give unsectioned items a header. Without one, they sit at the top |
 | `due_display` | `all` | `all`, `soon` (overdue, today, tomorrow) or `none` |
+| `parse_dates` | `true` | Set to `false` to keep everything you type as the item text |
+| `todoist_project` | list name | Setup 2 only: the Todoist project name, if it differs from the list's name |
 | `add_timeout` | `20` | Seconds of no typing before the add bar closes. `0` = never |
 | `show_count` | `true` | Show the open-item count in the header |
 | `count_suffix` | `open` | Text after the count, for example `to get` |
-| `show_hint` | `true` | Show the syntax hint under the add field |
+| `show_hint` | `true` | Show the example under the add field |
 | `accent` | theme accent | Any CSS colour for the + button, ticks and today chips |
-| `tasks_entity` | `sensor.todoist_tasks` | Change this if you renamed the sensors |
-| `sections_entity` | `sensor.todoist_sections` | |
-| `completed_entity` | `sensor.todoist_completed` | |
-| `add_script` | `script.todoist_bridge_add` | |
-| `done_script` | `script.todoist_bridge_set_done` | |
+| `source` | `auto` | `todo` or `todoist_bridge`. Normally worked out from the other options |
 
-Collapsed and expanded sections are remembered per device. Dates follow your Home Assistant language setting.
+The Todoist bridge has a few extra options, listed in [its guide](docs/todoist-bridge.md#bridge-only-options).
 
-The card's earlier name, `custom:todoist-sections-card`, still works.
+Collapsed and expanded sections are remembered per device. The card's earlier name, `custom:todoist-sections-card`, still works.
 
-## Adding items
+## Using the add bar
 
-- **Type naturally:** `milk tomorrow`, `bin bags fri 7pm`, `water filter every 2 months`, `@urgent`, `p1`.
-- **Pick a section:** add `/Section` anywhere, for example `bananas /Fruit & veg`. Multi-word section names work. The card shows which section it will use before you save.
-- **Unknown sections:** if no section matches, the card warns you and adds the item without a section.
 - **Saving:** Enter or the tick saves. The bar stays open for the next item.
 - **Closing:** the bar closes after `add_timeout` seconds of no typing and keeps any half-typed text. × or Escape closes it and clears the text.
-- **Confirmation:** after saving, the card shows what Todoist actually set, for example "Added milk to Bakery, due tomorrow".
+- **Preview:** before you save, the card shows the list or section, due date, repeat, labels and priority it has picked out.
+- **Confirmation:** after saving, the card says what it added, for example "Added milk to Bakery, due Tomorrow 17:00".
 
-Todoist's parser is eager: `sun cream` becomes an item called "cream" due on Sunday. Rephrase it (`suncream`) or fix the date in Todoist.
+## Privacy and security
 
-## Limits
-
-- Up to 200 active tasks and 200 sections are fetched, across your whole account (or per project in single-project mode). There is no pagination.
-- Completed items cover the last 7 days.
-- Changes made in the Todoist app appear within 60 seconds. Changes made in the card appear immediately.
-- Subtasks are shown flat within their section.
+- **Setups 1 and 2 add nothing new to Home Assistant.** The card uses the to-do lists and actions Home Assistant already has, with your normal login. It has no API token and talks to no outside service.
+- **Home Assistant users can change lists.** Anyone with a Home Assistant login can add and tick items on lists they can see. That's how Home Assistant's to-do lists already work, with or without this card.
+- **The Todoist bridge is different.** It stores an API token and syncs your Todoist account into Home Assistant. Read [its privacy notes](docs/todoist-bridge.md#privacy-and-security) before using it.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Card says `sensor.todoist_tasks is missing` | The package isn't loaded. Check that `packages:` is in `configuration.yaml`, the file is in `/config/packages/`, and you restarted. |
-| `sensor.todoist_tasks` is `unavailable` | Check your token in `secrets.yaml`, including the `Bearer ` prefix. Look in **Settings** → **System** → **Logs** for `rest` errors. |
+| "todo.… was not found" | Check the entity ID in **Settings → Devices & services → Entities**. |
+| No + button | The list doesn't allow adding items. Some integrations provide read-only lists. |
+| Dates stay in the item text | The list doesn't support due dates, or the phrase isn't one the card knows. The preview shows what it understood. |
+| Todoist: an error about the section | That section doesn't exist in the Todoist project. Check the spelling, or use quotes for names with spaces. |
+| Todoist: an error about the project name | You've renamed the list in Home Assistant. Set `todoist_project:` to the name used in Todoist. |
 | "Custom element doesn't exist" | Reload the browser. With a manual install, check the resource URL and type. |
-| Items are added but don't land in the right list | Check that `project_id` in the card matches the Todoist address. |
 
 ## Licence
 
