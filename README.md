@@ -238,3 +238,9 @@ Todoist's parser is eager: `sun cream` becomes an item called "cream" due on Sun
 ## Licence
 
 [MIT](LICENSE)
+
+## Support
+
+If this card is useful to you, you can buy me a coffee:
+
+<a href="https://www.buymeacoffee.com/joshmd"><img src="https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=&slug=joshmd&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff" alt="Buy me a coffee" height="50"></a>
