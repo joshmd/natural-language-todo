@@ -11,13 +11,15 @@
  *                   lists can be shown as sections of one card. Lists from the
  *                   core Todoist integration add through todoist.new_task, so
  *                   Todoist parses dates, recurrence, labels and priority.
+ *   companion       The Natural Language To-do Companion integration: real
+ *                   Todoist sections and Quick Add, set up in the UI.
  *   todoist_bridge  The YAML bridge package (REST sensors + scripts against the
- *                   Todoist API v1) for real Todoist sections.
+ *                   Todoist API v1). Superseded by the companion.
  *
  * The card never holds an API token. No build step, no dependencies.
  */
 
-const CARD_VERSION = '0.2.0';
+const CARD_VERSION = '0.3.0';
 
 const DEFAULTS = {
   title: '',
@@ -34,7 +36,10 @@ const DEFAULTS = {
   add_script: 'script.todoist_bridge_add',
   done_script: 'script.todoist_bridge_set_done',
   // shared
-  source: 'auto', // auto | todo | todoist_bridge
+  source: 'auto', // auto | todo | companion | todoist_bridge
+  sort: 'manual', // manual | due | alphabetical
+  max_items: 0, // open items shown before "Show more"; 0 = all
+  max_height: '', // e.g. 400px; the list scrolls inside the card
   show_completed: false,
   completed_limit: 10,
   completed_collapsed: true,
@@ -51,10 +56,17 @@ const DEFAULTS = {
   accent: null,
 };
 
-const SOURCES = ['auto', 'todo', 'todoist_bridge'];
+const SOURCES = ['auto', 'todo', 'companion', 'todoist_bridge'];
+const SORTS = ['manual', 'due', 'alphabetical'];
 const DUE_DISPLAY = ['all', 'soon', 'none'];
 const COMPLETED_KEY = '__completed';
 const UNSECTIONED_KEY = '__none';
+const EXPANDED_KEY = '__expanded';
+const CSS_LENGTH = /^\d+(\.\d+)?(px|em|rem|vh|%)$/;
+
+const COMPANION_DOMAIN = 'natural_language_todo';
+const COMPANION_HACS =
+  'https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-todo-companion&category=integration';
 
 // TodoListEntityFeature bits.
 const FEATURE_CREATE = 1;
@@ -107,6 +119,20 @@ const pad = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const startOfDay = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+
+// Sort key for a due date: [day, time]. All-day items come before timed ones on
+// the same day; items without a date sort last.
+function dueKey(due) {
+  const raw = due?.datetime || due?.date;
+  if (!raw) return [Infinity, 0];
+  if (String(raw).length <= 10) {
+    const [y, m, d] = String(raw).split('-').map(Number);
+    return [new Date(y, m - 1, d).getTime(), -1];
+  }
+  const when = new Date(raw);
+  if (isNaN(when)) return [Infinity, 0];
+  return [startOfDay(when).getTime(), when.getTime()];
+}
 
 function validDate(y, m, d) {
   const dt = new Date(y, m, d);
@@ -481,6 +507,138 @@ class BridgeSource {
   }
 }
 
+// ---- Companion integration (natural_language_todo) ---------------------------
+
+class CompanionSource {
+  constructor(config, onChange) {
+    this.c = config;
+    this.onChange = onChange;
+    this.data = null;
+    this.error = null;
+    this.rev = 0;
+    this.gen = 0;
+    this.unsub = null;
+    this.connected = false;
+  }
+
+  static available(hass) {
+    return !!hass?.services?.[COMPANION_DOMAIN];
+  }
+
+  _changed() {
+    this.rev += 1;
+    this.onChange();
+  }
+
+  connect(hass) {
+    this._hass = hass;
+    // Not installed yet: the snapshot explains, and connecting is retried on
+    // the next update.
+    if (this.connected || !CompanionSource.available(hass)) return;
+    this.connected = true;
+    const gen = ++this.gen;
+    hass.connection
+      .subscribeMessage(
+        (msg) => {
+          if (gen !== this.gen) return;
+          this.data = msg;
+          this.error = null;
+          this._changed();
+        },
+        { type: `${COMPANION_DOMAIN}/subscribe`, project_id: this.c.project_id },
+      )
+      .then((unsub) => {
+        if (gen !== this.gen) unsub();
+        else this.unsub = unsub;
+      })
+      .catch((err) => {
+        if (gen !== this.gen) return;
+        this.error =
+          err?.code === 'not_found'
+            ? `Project ${this.c.project_id} isn't ticked in the companion integration. Add it under Settings → Devices & services → Natural Language To-do Companion → Configure.`
+            : `The companion integration couldn't load this project: ${err?.message || 'unknown error'}`;
+        this._changed();
+      });
+  }
+
+  disconnect() {
+    this.connected = false;
+    this.gen += 1;
+    try {
+      this.unsub?.();
+    } catch (e) {
+      /* already closed */
+    }
+    this.unsub = null;
+  }
+
+  version(hass) {
+    return `${this.rev}|${CompanionSource.available(hass)}`;
+  }
+
+  resolveToken() {
+    return this.rev;
+  }
+
+  _norm(t, completed) {
+    const d = t.due;
+    return {
+      id: String(t.id),
+      content: t.content,
+      sectionKey: t.section_id ? String(t.section_id) : null,
+      due: d ? { date: d.date, datetime: d.datetime } : null,
+      recurring: !!d?.is_recurring,
+      order: t.order ?? 1e9,
+      completedAt: completed ? t.completed_at : null,
+    };
+  }
+
+  snapshot(hass) {
+    if (!CompanionSource.available(hass)) {
+      return { error: 'This card needs the Natural Language To-do Companion integration.', install: true };
+    }
+    if (this.error) return { error: this.error };
+    if (!this.data) return { loading: true };
+    return {
+      sections: (this.data.sections || []).map((s) => ({ key: String(s.id), name: s.name })),
+      items: (this.data.tasks || []).map((t) => this._norm(t, false)),
+      completed: (this.data.completed || []).map((t) => this._norm(t, true)),
+    };
+  }
+
+  caps() {
+    return { add: true, toggle: true, completed: true, sectionMode: 'match', parse: () => ({}) };
+  }
+
+  hint(firstSection) {
+    return firstSection ? `Try: milk tomorrow 5pm /${firstSection}` : 'Try: milk tomorrow 5pm';
+  }
+
+  async add(hass, parsed) {
+    const res = await hass.connection.sendMessagePromise({
+      type: 'call_service',
+      domain: COMPANION_DOMAIN,
+      service: 'add_task',
+      service_data: {
+        text: parsed.text,
+        project_id: this.c.project_id,
+        ...(parsed.section ? { section_id: parsed.section.key } : {}),
+      },
+      return_response: true,
+    });
+    const r = res?.response || {};
+    let msg = `Added ${r.content || parsed.text}`;
+    if (parsed.section) msg += ` to ${parsed.section.name}`;
+    if (r.due) msg += `, due ${r.due}`;
+    if (r.moved === false) return { message: `${msg}. It could not be moved into this list, check Todoist.`, warn: true };
+    return { message: msg };
+  }
+
+  async setDone(hass, item, done) {
+    await hass.callService(COMPANION_DOMAIN, 'set_done', { task_id: item.id, done });
+  }
+}
+
 // ---- Home Assistant to-do lists (todo.* entities) ---------------------------
 
 class TodoSource {
@@ -737,8 +895,10 @@ const ICON_CHEV =
   '<svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 
 const STYLES = `
-  :host { --tsc-accent: var(--tsc-accent-override, var(--accent-color, #ff9800)); --tsc-field: rgba(0, 0, 0, 0.15); }
-  ha-card { padding: 16px 16px 8px; }
+  :host { display: block; height: 100%; --tsc-accent: var(--tsc-accent-override, var(--accent-color, #ff9800)); --tsc-field: rgba(0, 0, 0, 0.15); }
+  /* Fills the height the dashboard gives it; the list scrolls, the header and
+     add bar stay put. With no fixed height the card grows with its content. */
+  ha-card { padding: 16px 16px 8px; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; }
   button { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: pointer; }
   button:focus-visible, input:focus-visible { outline: 2px solid var(--tsc-accent); outline-offset: 2px; border-radius: 8px; }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -767,7 +927,10 @@ const STYLES = `
   .toast.err { color: var(--error-color, #db4437); }
   [hidden] { display: none !important; }
 
-  .list { padding-top: 4px; }
+  .list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0 -8px; padding: 4px 8px 0; }
+  .more { display: block; width: 100%; min-height: 44px; margin-top: 4px; border-top: 1px solid var(--divider-color);
+          color: var(--tsc-accent); font-size: 14px; font-weight: 500; text-align: left; padding: 10px 4px; }
+  .empty a { color: var(--tsc-accent); }
   ul { list-style: none; margin: 0; padding: 0; }
   .sec { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 10px 4px 4px; margin-top: 6px;
          border-top: 1px solid var(--divider-color); color: var(--secondary-text-color); text-align: left; }
@@ -806,6 +969,15 @@ function normaliseConfig(config) {
   if (!DUE_DISPLAY.includes(c.due_display)) {
     throw new Error(`natural-language-todo-card: due_display must be one of ${DUE_DISPLAY.join(', ')}`);
   }
+  if (!SORTS.includes(c.sort)) {
+    throw new Error(`natural-language-todo-card: sort must be one of ${SORTS.join(', ')}`);
+  }
+  if (typeof c.max_height === 'number') c.max_height = `${c.max_height}px`;
+  c.max_height = String(c.max_height ?? '').trim();
+  if (c.max_height && !CSS_LENGTH.test(c.max_height)) {
+    throw new Error('natural-language-todo-card: max_height must be a size such as 400px, 30em or 50vh');
+  }
+  c.max_items = Math.max(0, Math.floor(Number(c.max_items) || 0));
   c._entities = [
     ...(c.entity ? [{ entity: c.entity }] : []),
     ...c.entities.map((e) => (typeof e === 'string' ? { entity: e } : { entity: e?.entity, name: e?.name })),
@@ -815,12 +987,14 @@ function normaliseConfig(config) {
       throw new Error(`natural-language-todo-card: "${entity}" is not a to-do entity (todo.*)`);
     }
   }
-  if (c.source === 'auto') c.source = c._entities.length ? 'todo' : 'todoist_bridge';
+  // With project_id and no source, the companion is used when it's installed,
+  // otherwise the YAML bridge. That is decided once Home Assistant is known.
+  if (c.source === 'auto') c.source = c._entities.length ? 'todo' : 'todoist';
   if (c.source === 'todo' && !c._entities.length) {
     throw new Error('natural-language-todo-card: set entity (or entities) to a to-do list');
   }
-  if (c.source === 'todoist_bridge' && !c.project_id) {
-    throw new Error('natural-language-todo-card: set entity to a to-do list, or project_id for the Todoist bridge');
+  if (c.source !== 'todo' && !c.project_id) {
+    throw new Error('natural-language-todo-card: set entity to a to-do list, or project_id for a Todoist project');
   }
   c.project_id = String(c.project_id);
   c.add_timeout = Math.max(0, Number(c.add_timeout) || 0);
@@ -833,7 +1007,11 @@ const CardBase = typeof HTMLElement === 'undefined' ? class {} : HTMLElement;
 class NaturalLanguageTodoCard extends CardBase {
   static getStubConfig(hass) {
     const entity = Object.keys(hass?.states || {}).find((id) => id.startsWith('todo.')) || 'todo.shopping_list';
-    return { entity };
+    return { entity, sort: 'due' };
+  }
+
+  static getConfigElement() {
+    return document.createElement('natural-language-todo-card-editor');
   }
 
   constructor() {
@@ -854,10 +1032,8 @@ class NaturalLanguageTodoCard extends CardBase {
     const c = normaliseConfig(config);
     this._source?.disconnect();
     this._config = c;
-    this._source =
-      c.source === 'todo'
-        ? new TodoSource(c, () => this._renderList(true))
-        : new BridgeSource(c, () => this._renderList(true));
+    this._source = null;
+    if (this._hass) this._makeSource(this._hass);
     const key = c.source === 'todo' ? c._entities.map((e) => e.entity).join(',') : c.project_id;
     this._storeKey = `natural-language-todo-card:${key}`;
     this._collapsed = this._loadCollapsed();
@@ -870,11 +1046,31 @@ class NaturalLanguageTodoCard extends CardBase {
     return 3;
   }
 
+  // Sections dashboards: resizable in the card's Layout tab. With a fixed
+  // number of rows the list scrolls inside the card.
+  getGridOptions() {
+    return { columns: 6, rows: 'auto', min_columns: 3, min_rows: 2 };
+  }
+
+  _makeSource(hass) {
+    const c = this._config;
+    const onChange = () => this._renderList(true);
+    let kind = c.source;
+    if (kind === 'todoist') kind = CompanionSource.available(hass) ? 'companion' : 'todoist_bridge';
+    this._source =
+      kind === 'todo'
+        ? new TodoSource(c, onChange)
+        : kind === 'companion'
+          ? new CompanionSource(c, onChange)
+          : new BridgeSource(c, onChange);
+  }
+
   // ------------------------------------------------------------------ hass
 
   set hass(hass) {
     this._hass = hass;
     if (!this._config) return;
+    if (!this._source) this._makeSource(hass);
     if (!this._built) this._build();
     if (this.isConnected) this._source.connect(hass);
     const sig = this._source.version(hass);
@@ -885,7 +1081,7 @@ class NaturalLanguageTodoCard extends CardBase {
   }
 
   connectedCallback() {
-    if (this._config && this._hass) this._source.connect(this._hass);
+    if (this._source && this._hass) this._source.connect(this._hass);
   }
 
   disconnectedCallback() {
@@ -935,6 +1131,7 @@ class NaturalLanguageTodoCard extends CardBase {
 
     this._$title.hidden = !c.title;
     this._$hint.hidden = !c.show_hint;
+    if (c.max_height) this._$list.style.maxHeight = c.max_height;
     if (c.accent) this.style.setProperty('--tsc-accent-override', c.accent);
     else this.style.removeProperty('--tsc-accent-override');
 
@@ -1167,7 +1364,7 @@ class NaturalLanguageTodoCard extends CardBase {
     }
     for (const t of this._pendingAdds) open.push({ ...t, due: null, order: 1e9, _busy: true, _temp: true });
 
-    const byOrder = (a, b) => (a.order ?? 1e9) - (b.order ?? 1e9);
+    const byOrder = this._sorter();
     const groups = [];
     if (c.show_unsectioned) {
       const list = open.filter((t) => groupKey(t) === UNSECTIONED_KEY).sort(byOrder);
@@ -1188,7 +1385,50 @@ class NaturalLanguageTodoCard extends CardBase {
 
     const sectionName = new Map(snap.sections.map((s) => [s.key, s.name]));
     const openCount = groups.reduce((n, g) => n + g.items.length, 0);
-    return { groups, done: doneSorted, openCount, sectionName, firstSection: visible[0]?.name };
+
+    // max_items: show the first N open items in display order. Sections past
+    // the cut are hidden; "Show N more" reveals the rest.
+    let hiddenCount = 0;
+    const limited = c.max_items > 0 && openCount > c.max_items;
+    if (limited && !this._collapsed[EXPANDED_KEY]) {
+      let left = c.max_items;
+      for (const g of groups) {
+        if (left <= 0) {
+          g.cut = true;
+          hiddenCount += g.items.length;
+          continue;
+        }
+        if (g.collapsed) continue;
+        g.shown = g.items.slice(0, left);
+        hiddenCount += g.items.length - g.shown.length;
+        left -= g.shown.length;
+      }
+    }
+    return {
+      groups: groups.filter((g) => !g.cut),
+      done: doneSorted,
+      openCount,
+      hiddenCount,
+      limited,
+      sectionName,
+      firstSection: visible[0]?.name,
+    };
+  }
+
+  _sorter() {
+    const byOrder = (a, b) => (a.order ?? 1e9) - (b.order ?? 1e9);
+    if (this._config.sort === 'alphabetical') {
+      const coll = new Intl.Collator(this._locale(), { sensitivity: 'base', numeric: true });
+      return (a, b) => coll.compare(a.content || '', b.content || '') || byOrder(a, b);
+    }
+    if (this._config.sort === 'due') {
+      return (a, b) => {
+        const [da, ta] = dueKey(a.due);
+        const [db, tb] = dueKey(b.due);
+        return (da === db ? 0 : da - db) || ta - tb || byOrder(a, b);
+      };
+    }
+    return byOrder;
   }
 
   _isCollapsed(key, name) {
@@ -1293,7 +1533,10 @@ class NaturalLanguageTodoCard extends CardBase {
 
     if (d.error || d.loading) {
       this._$count.textContent = '';
-      this._$list.innerHTML = `<div class="empty">${esc(d.error || 'Loading…')}</div>`;
+      const install = d.install
+        ? ` <a href="${COMPANION_HACS}" target="_blank" rel="noopener noreferrer">Install it from HACS</a>, then set it up in Settings → Devices & services.`
+        : '';
+      this._$list.innerHTML = `<div class="empty">${esc(d.error || 'Loading…')}${install}</div>`;
       return;
     }
 
@@ -1311,8 +1554,13 @@ class NaturalLanguageTodoCard extends CardBase {
         html += `<button class="sec" type="button" data-action="collapse" data-key="${esc(g.key)}" aria-expanded="${!g.collapsed}">
           <span class="sec-name">${esc(g.name)}</span><span class="pill">${g.items.length}</span>${ICON_CHEV}</button>`;
       }
-      if (!g.collapsed) html += `<ul>${g.items.map((t) => this._itemHtml(t, d.sectionName, false, caps.toggle)).join('')}</ul>`;
+      if (!g.collapsed) html += `<ul>${(g.shown || g.items).map((t) => this._itemHtml(t, d.sectionName, false, caps.toggle)).join('')}</ul>`;
       html += '</div>';
+    }
+    if (d.hiddenCount) {
+      html += `<button class="more" type="button" data-action="more" data-key="${EXPANDED_KEY}">Show ${d.hiddenCount} more</button>`;
+    } else if (d.limited) {
+      html += `<button class="more" type="button" data-action="more" data-key="${EXPANDED_KEY}">Show less</button>`;
     }
 
     if (c.show_completed && d.done.length) {
@@ -1331,7 +1579,7 @@ class NaturalLanguageTodoCard extends CardBase {
 
     if (focusKey) {
       const [action, id] = focusKey;
-      const attr = action === 'collapse' ? 'data-key' : 'data-id';
+      const attr = action === 'toggle' ? 'data-id' : 'data-key';
       this._$list.querySelector(`[data-action="${CSS.escape(action)}"][${attr}="${CSS.escape(id)}"]`)?.focus();
     }
   }
@@ -1344,6 +1592,10 @@ class NaturalLanguageTodoCard extends CardBase {
     if (el.dataset.action === 'collapse') {
       const key = el.dataset.key;
       this._collapsed[key] = !this._isCollapsed(key, el.querySelector('.sec-name')?.textContent);
+      this._saveCollapsed();
+      this._renderList(true);
+    } else if (el.dataset.action === 'more') {
+      this._collapsed[EXPANDED_KEY] = !this._collapsed[EXPANDED_KEY];
       this._saveCollapsed();
       this._renderList(true);
     } else if (el.dataset.action === 'toggle') {
@@ -1368,6 +1620,222 @@ class NaturalLanguageTodoCard extends CardBase {
   }
 }
 
+
+// =============================================================================
+// Visual editor
+// -----------------------------------------------------------------------------
+// Built on Home Assistant's own ha-form. Options it doesn't show (hide_sections,
+// collapsed_sections, bridge entity names) are kept as they are.
+// =============================================================================
+
+const EDITOR_LABELS = {
+  mode: 'Where the list comes from',
+  entities: 'To-do lists',
+  project_id: 'Todoist project',
+  title: 'Title',
+  sort: 'Sort items',
+  max_items: 'Show at most this many items (0 = all)',
+  max_height: 'Maximum list height, e.g. 400px (blank = no limit)',
+  show_completed: 'Show completed items',
+  completed_limit: 'Completed items shown',
+  due_display: 'Due dates',
+  show_count: 'Show the item count',
+  count_suffix: 'Text after the count',
+  show_hint: 'Show the example under the add bar',
+  add_timeout: 'Close the add bar after this many seconds of no typing (0 = never)',
+  hide_empty_sections: 'Hide empty sections',
+  parse_dates: 'Read dates from what you type',
+  accent: 'Accent colour (CSS colour, blank = theme)',
+};
+
+const EDITOR_HELPERS = {
+  entities: 'Pick one list, or several to show each as a section.',
+  project_id: 'Projects ticked in the Natural Language To-do Companion integration.',
+  max_height: 'On sections dashboards you can also set the card size in the Layout tab.',
+};
+
+// Simple options: shown in the editor, removed from the YAML when left at the default.
+const EDITOR_SIMPLE = [
+  'title', 'sort', 'max_items', 'max_height', 'show_completed', 'completed_limit', 'due_display',
+  'show_count', 'count_suffix', 'show_hint', 'add_timeout', 'hide_empty_sections', 'parse_dates', 'accent',
+];
+
+class NaturalLanguageTodoCardEditor extends CardBase {
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (first) this._loadProjects();
+    this._render();
+  }
+
+  connectedCallback() {
+    this._ensureForm().then(() => this._render());
+  }
+
+  // ha-form is loaded lazily by Home Assistant; asking for a built-in card's
+  // editor makes sure it is defined.
+  async _ensureForm() {
+    if (customElements.get('ha-form')) return;
+    try {
+      const helpers = await window.loadCardHelpers?.();
+      const card = await helpers?.createCardElement({ type: 'entities', entities: [] });
+      await card?.constructor?.getConfigElement?.();
+    } catch (e) {
+      /* the form renders once ha-form is defined */
+    }
+  }
+
+  async _loadProjects() {
+    if (!CompanionSource.available(this._hass)) return;
+    try {
+      const res = await this._hass.callWS({ type: `${COMPANION_DOMAIN}/projects` });
+      this._projects = res?.projects || [];
+    } catch (e) {
+      this._projects = [];
+    }
+    this._render();
+  }
+
+  _mode(c) {
+    if (c.source && c.source !== 'auto') return c.source;
+    if (c.entity || (Array.isArray(c.entities) && c.entities.length)) return 'todo';
+    if (c.project_id) return CompanionSource.available(this._hass) ? 'companion' : 'todoist_bridge';
+    return 'todo';
+  }
+
+  _schema(mode) {
+    const modes = [
+      { value: 'todo', label: 'Home Assistant to-do lists' },
+      { value: 'companion', label: 'Todoist, with sections (companion integration)' },
+      { value: 'todoist_bridge', label: 'Todoist bridge (YAML package)' },
+    ];
+    const schema = [{ name: 'mode', selector: { select: { mode: 'dropdown', options: modes } } }];
+    if (mode === 'todo') {
+      schema.push({ name: 'entities', selector: { entity: { domain: 'todo', multiple: true } } });
+    } else if (mode === 'companion' && this._projects?.length) {
+      const options = this._projects.map((p) => ({ value: String(p.id), label: p.name }));
+      schema.push({ name: 'project_id', selector: { select: { mode: 'dropdown', options } } });
+    } else {
+      schema.push({ name: 'project_id', selector: { text: {} } });
+    }
+    schema.push(
+      { name: 'title', selector: { text: {} } },
+      {
+        name: 'sort',
+        selector: {
+          select: {
+            mode: 'dropdown',
+            options: [
+              { value: 'due', label: 'By due date' },
+              { value: 'manual', label: "In the list's own order" },
+              { value: 'alphabetical', label: 'A to Z' },
+            ],
+          },
+        },
+      },
+      { name: 'max_items', selector: { number: { min: 0, max: 200, step: 1, mode: 'box' } } },
+      { name: 'max_height', selector: { text: {} } },
+      {
+        type: 'expandable',
+        name: '',
+        title: 'More options',
+        flatten: true,
+        schema: [
+          { name: 'show_completed', selector: { boolean: {} } },
+          { name: 'completed_limit', selector: { number: { min: 1, max: 100, step: 1, mode: 'box' } } },
+          {
+            name: 'due_display',
+            selector: {
+              select: {
+                mode: 'dropdown',
+                options: [
+                  { value: 'all', label: 'Show all' },
+                  { value: 'soon', label: 'Only overdue, today and tomorrow' },
+                  { value: 'none', label: "Don't show" },
+                ],
+              },
+            },
+          },
+          { name: 'show_count', selector: { boolean: {} } },
+          { name: 'count_suffix', selector: { text: {} } },
+          { name: 'show_hint', selector: { boolean: {} } },
+          { name: 'add_timeout', selector: { number: { min: 0, max: 600, step: 1, mode: 'box', unit_of_measurement: 's' } } },
+          { name: 'hide_empty_sections', selector: { boolean: {} } },
+          ...(mode === 'todo' ? [{ name: 'parse_dates', selector: { boolean: {} } }] : []),
+          { name: 'accent', selector: { text: {} } },
+        ],
+      },
+    );
+    return schema;
+  }
+
+  _formData(mode) {
+    const c = this._config;
+    const data = { mode };
+    for (const key of EDITOR_SIMPLE) data[key] = c[key] ?? DEFAULTS[key] ?? '';
+    data.sort = c.sort || DEFAULTS.sort;
+    if (mode === 'todo') {
+      const list = [...(c.entity ? [c.entity] : []), ...(c.entities || []).map((e) => (typeof e === 'string' ? e : e?.entity))];
+      data.entities = list.filter(Boolean);
+    } else {
+      data.project_id = c.project_id ? String(c.project_id) : '';
+    }
+    return data;
+  }
+
+  _render() {
+    if (!this._config || !this._hass) return;
+    if (!customElements.get('ha-form')) {
+      if (!this._form) this.textContent = 'Loading editor…';
+      return;
+    }
+    if (!this._form) {
+      this._form = document.createElement('ha-form');
+      this._form.computeLabel = (s) => EDITOR_LABELS[s.name] ?? s.name;
+      this._form.computeHelper = (s) => EDITOR_HELPERS[s.name];
+      this._form.addEventListener('value-changed', (e) => this._changed(e.detail.value));
+      this.replaceChildren(this._form);
+    }
+    const mode = this._mode(this._config);
+    this._form.hass = this._hass;
+    this._form.schema = this._schema(mode);
+    this._form.data = this._formData(mode);
+  }
+
+  _changed(value) {
+    const old = this._config;
+    const cfg = { ...old };
+    const mode = value.mode;
+    delete cfg.entity;
+    delete cfg.entities;
+    delete cfg.source;
+    if (mode === 'todo') {
+      delete cfg.project_id;
+      // Keep any custom section names from the YAML.
+      const named = new Map((old.entities || []).filter((e) => e && typeof e === 'object').map((e) => [e.entity, e]));
+      const list = value.entities || [];
+      if (list.length === 1 && !named.has(list[0])) cfg.entity = list[0];
+      else if (list.length) cfg.entities = list.map((id) => named.get(id) || id);
+    } else {
+      cfg.project_id = value.project_id || '';
+      cfg.source = mode;
+    }
+    for (const key of EDITOR_SIMPLE) {
+      const v = value[key];
+      if (v === undefined || v === '' || v === null || v === DEFAULTS[key]) delete cfg[key];
+      else cfg[key] = v;
+    }
+    this._config = cfg;
+    this.dispatchEvent(new CustomEvent('config-changed', { detail: { config: cfg }, bubbles: true, composed: true }));
+    this._render();
+  }
+}
+
 if (typeof customElements !== 'undefined' && !customElements.get('natural-language-todo-card')) {
   customElements.define('natural-language-todo-card', NaturalLanguageTodoCard);
   window.customCards = window.customCards || [];
@@ -1381,9 +1849,13 @@ if (typeof customElements !== 'undefined' && !customElements.get('natural-langua
   console.info(`%c NATURAL-LANGUAGE-TODO-CARD %c v${CARD_VERSION} `, 'background:#e0585f;color:#fff', 'background:#444;color:#fff');
 }
 
+if (typeof customElements !== 'undefined' && !customElements.get('natural-language-todo-card-editor')) {
+  customElements.define('natural-language-todo-card-editor', NaturalLanguageTodoCardEditor);
+}
+
 // Earlier name, kept so dashboards using custom:todoist-sections-card keep working.
 if (typeof customElements !== 'undefined' && !customElements.get('todoist-sections-card')) {
   customElements.define('todoist-sections-card', class extends NaturalLanguageTodoCard {});
 }
 
-export { parseInput, extractSection, normaliseConfig, BridgeSource, TodoSource, CARD_VERSION };
+export { parseInput, extractSection, normaliseConfig, dueKey, BridgeSource, CompanionSource, TodoSource, CARD_VERSION };

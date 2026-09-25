@@ -2,7 +2,8 @@
 
 The bridge is a YAML package that talks to the Todoist API v1 directly. Use it if you want **real Todoist sections grouped in the card** and **Todoist's own Quick Add parser** today.
 
-A simpler replacement is planned: a companion integration you set up in **Settings → Devices & services**, which reuses your existing Todoist connection. When it arrives, the bridge keeps working, and there will be a guide for moving across.
+> [!TIP]
+> **There's now a simpler way.** The [companion integration](https://github.com/joshmd/natural-language-todo-companion) gives you the same grouped sections and Quick Add parsing, set up in **Settings → Devices & services**. It reuses your Todoist integration's connection and only syncs the projects you tick. The bridge keeps working, but new setups should use the companion. See [moving to the companion](#moving-to-the-companion-integration).
 
 If you only need to add items to Todoist and tick them off, you don't need the bridge: use your existing Todoist integration instead. See [Setup 2 in the README](../README.md#setup-2-todoist-with-your-existing-integration).
 
@@ -139,3 +140,16 @@ With the bridge, everything after `/Section` handling is Todoist's own Quick Add
 | "Custom element doesn't exist" | Reload the browser. With a manual install, check the resource URL and type. |
 | Items are added but don't land in the right list | Check that `project_id` in the card matches the Todoist address. |
 
+## Moving to the companion integration
+
+Your cards don't need to change: a card with `project_id` and no `source` uses the companion automatically once it's installed.
+
+1. Install the [companion integration](https://github.com/joshmd/natural-language-todo-companion), restart, and set it up, ticking the same projects your cards use.
+2. Reload your dashboard and check the cards still show your lists.
+3. Remove the bridge:
+   - Delete `/config/packages/todoist_bridge.yaml`.
+   - Remove the `todoist_auth` line from `secrets.yaml`.
+   - Remove the three `sensor.todoist_*` lines from `recorder: exclude:`.
+4. Restart Home Assistant.
+
+If you'd rather be explicit, add `source: companion` to each card.

@@ -9,8 +9,10 @@ A Home Assistant dashboard card for your to-do lists that:
 
 - adds items the way you'd say them: `milk tomorrow 5pm /Bakery`
 - groups items into **sections** you can collapse or hide
+- sorts by **due date**, and can stay compact on busy dashboards
 - keeps the add bar tucked away until you need it
 - can show recently **completed** items
+- is set up in a **visual editor**, with no YAML needed
 
 It works with **any Home Assistant to-do list**: Local To-do, Todoist, Google Tasks, CalDAV, the Shopping list and others.
 
@@ -22,15 +24,15 @@ It works with **any Home Assistant to-do list**: Local To-do, Todoist, Google Ta
 |---|---|---|---|
 | **[1. Any to-do list](#setup-1-any-to-do-list)** | Just this card | Show several lists in one card, one section each | Dates and times, if the list supports them |
 | **[2. Todoist, with your existing integration](#setup-2-todoist-with-your-existing-integration)** | This card and the core [Todoist integration](https://www.home-assistant.io/integrations/todoist/) | Add into a Todoist section with `/Section`. Items are not grouped by section | Dates, times, repeats (`every 2 months`), `@labels`, `p1`–`p4` |
-| **[3. Todoist bridge](docs/todoist-bridge.md)** (advanced) | This card and a YAML package with your Todoist API token | Real Todoist sections, grouped | Todoist's own Quick Add parser |
+| **[3. Todoist with sections](#setup-3-todoist-with-sections)** | This card and the [companion integration](https://github.com/joshmd/natural-language-todo-companion), set up in the UI | Real Todoist sections, grouped | Todoist's own Quick Add parser |
 
-Setups 1 and 2 need **no YAML and no API token**. The card uses Home Assistant's own to-do lists and actions.
+None of these need YAML or an API token pasted into a file. Setups 1 and 2 use Home Assistant's own to-do lists and actions. Setup 3 reuses your Todoist integration's connection.
 
-A companion integration is planned that adds grouped Todoist sections to setup 2, set up entirely in **Settings → Devices & services**.
+Already using the YAML **Todoist bridge** from version 0.1? It still works. See [moving to the companion](docs/todoist-bridge.md#moving-to-the-companion-integration).
 
 ## Requirements
 
-- Home Assistant **2024.8** or newer
+- Home Assistant **2024.8** or newer (setup 3: **2026.1** or newer)
 - [HACS](https://hacs.xyz), unless you install manually
 
 ---
@@ -63,7 +65,7 @@ HACS registers the dashboard resource for you.
 1. Download `natural-language-todo-card.js` from the [latest release](https://github.com/joshmd/natural-language-Todo/releases/latest).
 2. Copy it to `/config/www/natural-language-todo-card.js`.
 3. Go to **Settings** → **Dashboards** → three-dot menu → **Resources** → **Add resource**:
-   - URL: `/local/natural-language-todo-card.js?v=0.2.0`
+   - URL: `/local/natural-language-todo-card.js?v=0.3.0`
    - Resource type: **JavaScript module**
 4. Reload your browser. Change the `?v=` number whenever you update the file, or browsers keep using the old copy.
 
@@ -76,8 +78,8 @@ If you don't see **Resources**, turn on **Advanced mode** in your user profile.
 ## Setup 1: Any to-do list
 
 1. Edit a dashboard and select **Add card**.
-2. Search for **Natural Language To-do Card**. It starts with your first to-do list.
-3. Switch to the code editor to choose a different list or change options:
+2. Search for **Natural Language To-do Card**. It starts with your first to-do list, sorted by due date.
+3. Use the editor to pick your lists and options. In YAML it looks like this:
 
 ```yaml
 type: custom:natural-language-todo-card
@@ -149,7 +151,7 @@ The card spots that the list comes from Todoist and adds items through the integ
 
 Things to know:
 
-- **Sections aren't shown as groups.** The Todoist integration doesn't tell Home Assistant which section a task is in, so the list shows ungrouped. The companion integration will fix this, or use [setup 3](docs/todoist-bridge.md) today.
+- **Sections aren't shown as groups.** The Todoist integration doesn't tell Home Assistant which section a task is in, so the list shows ungrouped. For grouped sections, use [setup 3](#setup-3-todoist-with-sections).
 - **The card can't check section names.** The preview marks them "checked by Todoist". If the section doesn't exist, Todoist rejects the item, the card shows the error and your text is kept.
 - **New items take a moment to show up.** The card shows them straight away, and the Todoist integration confirms them on its next refresh.
 - **Completed items aren't available.** The Todoist integration only provides open tasks.
@@ -157,13 +159,53 @@ Things to know:
 
 ---
 
+## Setup 3: Todoist with sections
+
+The [Natural Language To-do Companion](https://github.com/joshmd/natural-language-todo-companion) is a small integration that syncs the Todoist projects you choose, with their sections, and adds tasks with Todoist's own Quick Add parser.
+
+1. Install the companion from HACS:
+
+   [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-todo-companion&category=integration)
+
+2. Restart Home Assistant.
+3. Go to **Settings → Devices & services → Add integration**, search for **Natural Language To-do Companion**, choose **Use my Todoist integration**, and tick your projects.
+4. Add the card. In its editor, choose **Todoist, with sections**, then pick a project.
+
+```yaml
+type: custom:natural-language-todo-card
+source: companion
+project_id: 6Jf8VQXxpwv59GRH
+title: Shopping
+sort: due
+```
+
+Type `/` and a section's name to add to that section: `croissants tomorrow /Bakery`. Multi-word names work, and the preview shows the section before you save. Everything else is parsed by Todoist: dates, repeats, `@labels` and `p1`–`p4`.
+
+If the companion isn't installed, the card says so and links to it.
+
+---
+
+## Card size
+
+| Dashboard | How to keep the card compact |
+|---|---|
+| **Sections** (the default for new dashboards) | Open the card's **Layout** tab and set its width and height. The header and add bar stay put, and the list scrolls inside the card. |
+| **Any** | Set **Show at most this many items** (`max_items`). The card shows that many, in order, then a **Show 12 more** button. The count in the header stays the full total. |
+| **Any** | Set a **maximum list height** (`max_height`, for example `400px`). The list scrolls inside the card. |
+
 ## Options
+
+Most options can be set in the visual editor. These are YAML only: `hide_sections`, `collapsed_sections`, `completed_collapsed`, `show_unsectioned`, `unsectioned_title`, `todoist_project`, custom list `name:`s and the bridge options. The editor keeps them when you change other settings.
 
 | Option | Default | Description |
 |---|---|---|
 | `entity` | | The to-do list to show (setups 1 and 2) |
 | `entities` | | Several lists, one section each. Each entry is an entity ID, or `entity:` plus an optional `name:` |
+| `project_id` | | Setup 3: the Todoist project |
 | `title` | none | Card heading |
+| `sort` | `manual` | `due` (overdue first, then by date and time, undated last), `alphabetical`, or `manual` (the list's own order). Sorting applies within each section. New cards from the picker start with `due` |
+| `max_items` | `0` | Show at most this many open items, then a **Show more** button. `0` shows everything |
+| `max_height` | none | Maximum height of the list, such as `400px`, `30em` or `50vh`. The list scrolls inside the card |
 | `show_completed` | `false` | Show a Completed group, if the list keeps completed items |
 | `completed_limit` | `10` | Maximum completed items shown |
 | `completed_collapsed` | `true` | Completed group starts collapsed |
@@ -180,11 +222,11 @@ Things to know:
 | `count_suffix` | `open` | Text after the count, for example `to get` |
 | `show_hint` | `true` | Show the example under the add field |
 | `accent` | theme accent | Any CSS colour for the + button, ticks and today chips |
-| `source` | `auto` | `todo` or `todoist_bridge`. Normally worked out from the other options |
+| `source` | `auto` | `todo`, `companion` or `todoist_bridge`. Normally worked out: `entity` means `todo`, and `project_id` means the companion if it's installed, otherwise the bridge |
 
 The Todoist bridge has a few extra options, listed in [its guide](docs/todoist-bridge.md#bridge-only-options).
 
-Collapsed and expanded sections are remembered per device. The card's earlier name, `custom:todoist-sections-card`, still works.
+Collapsed and expanded sections, and **Show more**, are remembered per device. The card's earlier name, `custom:todoist-sections-card`, still works.
 
 ## Using the add bar
 
@@ -197,7 +239,8 @@ Collapsed and expanded sections are remembered per device. The card's earlier na
 
 - **Setups 1 and 2 add nothing new to Home Assistant.** The card uses the to-do lists and actions Home Assistant already has, with your normal login. It has no API token and talks to no outside service.
 - **Home Assistant users can change lists.** Anyone with a Home Assistant login can add and tick items on lists they can see. That's how Home Assistant's to-do lists already work, with or without this card.
-- **The Todoist bridge is different.** It stores an API token and syncs your Todoist account into Home Assistant. Read [its privacy notes](docs/todoist-bridge.md#privacy-and-security) before using it.
+- **The companion only syncs the projects you tick.** It reads your Todoist integration's token on the server and never sends it to the browser. Only task text, section, due date and order reach the card. See [its privacy notes](https://github.com/joshmd/natural-language-todo-companion#privacy-and-security).
+- **The YAML bridge is different.** It stores an API token and syncs your whole Todoist account into Home Assistant. Read [its privacy notes](docs/todoist-bridge.md#privacy-and-security), or move to the companion.
 
 ## Troubleshooting
 
@@ -209,6 +252,8 @@ Collapsed and expanded sections are remembered per device. The card's earlier na
 | Todoist: a server error or "unknown error" when adding | The Todoist integration can't reach Todoist. Look in **Settings → System → Logs** for Todoist errors such as `401 Unauthorized`, and reload or re-authenticate the integration in **Settings → Devices & services**. |
 | Todoist: an error about the section | That section doesn't exist in the Todoist project. Check the spelling, or use quotes for names with spaces. |
 | Todoist: an error about the project name | You've renamed the list in Home Assistant. Set `todoist_project:` to the name used in Todoist. |
+| "This card needs the Natural Language To-do Companion integration" | Install the companion (setup 3), restart, and set it up. Or use `entity:` for setup 2 instead. |
+| A project "isn't ticked in the companion integration" | Open the companion in **Settings → Devices & services**, select **Configure** and tick the project. |
 | "Custom element doesn't exist" | Reload the browser. With a manual install, check the resource URL and type. |
 
 ## Licence
