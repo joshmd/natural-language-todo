@@ -1,6 +1,6 @@
 /*
  * Natural Language To-do Card for Home Assistant
- * https://github.com/joshmd/natural-language-Todo
+ * https://github.com/joshmd/natural-language-todo
  * ----------------------------------------------
  * A to-do list card with sections, natural-language quick add, a collapsible
  * add bar that closes after a period of no typing, optional completed items
@@ -19,7 +19,7 @@
  * The card never holds an API token. No build step, no dependencies.
  */
 
-const CARD_VERSION = '0.3.0';
+const CARD_VERSION = '0.3.1';
 
 const DEFAULTS = {
   title: '',
@@ -1844,7 +1844,7 @@ if (typeof customElements !== 'undefined' && !customElements.get('natural-langua
     name: 'Natural Language To-do Card',
     description: 'To-do list with sections, natural-language quick add and optional completed items.',
     preview: true,
-    documentationURL: 'https://github.com/joshmd/natural-language-Todo',
+    documentationURL: 'https://github.com/joshmd/natural-language-todo',
   });
   console.info(`%c NATURAL-LANGUAGE-TODO-CARD %c v${CARD_VERSION} `, 'background:#e0585f;color:#fff', 'background:#444;color:#fff');
 }

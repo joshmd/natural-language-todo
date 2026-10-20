@@ -1,8 +1,8 @@
 # Natural Language To-do Card
 
-[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-Todo&category=plugin)
-[![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories/)
-[![Validate](https://github.com/joshmd/natural-language-Todo/actions/workflows/validate.yml/badge.svg)](https://github.com/joshmd/natural-language-Todo/actions/workflows/validate.yml)
+[![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-todo&category=plugin)
+[![HACS Default](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://hacs.xyz)
+[![Validate](https://github.com/joshmd/natural-language-todo/actions/workflows/validate.yml/badge.svg)](https://github.com/joshmd/natural-language-todo/actions/workflows/validate.yml)
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=000000)](https://www.buymeacoffee.com/joshmd)
 
 A Home Assistant dashboard card for your to-do lists that:
@@ -26,7 +26,7 @@ It works with **any Home Assistant to-do list**: Local To-do, Todoist, Google Ta
 | **[2. Todoist, with your existing integration](#setup-2-todoist-with-your-existing-integration)** | This card and the core [Todoist integration](https://www.home-assistant.io/integrations/todoist/) | Add into a Todoist section with `/Section`. Items are not grouped by section | Dates, times, repeats (`every 2 months`), `@labels`, `p1`–`p4` |
 | **[3. Todoist with sections](#setup-3-todoist-with-sections)** | This card and the [companion integration](https://github.com/joshmd/natural-language-todo-companion), set up in the UI | Real Todoist sections, grouped | Todoist's own Quick Add parser |
 
-None of these need YAML or an API token pasted into a file. Setups 1 and 2 use Home Assistant's own to-do lists and actions. Setup 3 reuses your Todoist integration's connection.
+None of these need YAML. Setups 1 and 2 use Home Assistant's own to-do lists and actions, with no token. Setup 3 asks for a Todoist API token once, in the companion's setup screen.
 
 Already using the YAML **Todoist bridge** from version 0.1? It still works. See [moving to the companion](docs/todoist-bridge.md#moving-to-the-companion-integration).
 
@@ -39,20 +39,9 @@ Already using the YAML **Todoist bridge** from version 0.1? It still works. See 
 
 ## Install the card
 
-1. Click this button to open the repository in HACS:
+1. Open **HACS** in Home Assistant and search for **Natural Language To-do Card**, or click this button:
 
-   [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-Todo&category=plugin)
-
-   <details>
-   <summary>If the button does not work</summary>
-
-   1. Open **HACS** in Home Assistant.
-   2. Select the three-dot menu (top right) → **Custom repositories**.
-   3. Repository: `https://github.com/joshmd/natural-language-Todo`
-   4. Type: **Dashboard**
-   5. Select **Add**, then search HACS for **Natural Language To-do Card**.
-
-   </details>
+   [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-todo&category=plugin)
 
 2. Select **Download**, then **Download** again to confirm.
 3. When HACS asks, reload your browser.
@@ -62,10 +51,10 @@ HACS registers the dashboard resource for you.
 <details>
 <summary>Install the card manually instead</summary>
 
-1. Download `natural-language-todo-card.js` from the [latest release](https://github.com/joshmd/natural-language-Todo/releases/latest).
+1. Download `natural-language-todo-card.js` from the [latest release](https://github.com/joshmd/natural-language-todo/releases/latest).
 2. Copy it to `/config/www/natural-language-todo-card.js`.
 3. Go to **Settings** → **Dashboards** → three-dot menu → **Resources** → **Add resource**:
-   - URL: `/local/natural-language-todo-card.js?v=0.3.0`
+   - URL: `/local/natural-language-todo-card.js?v=0.3.1`
    - Resource type: **JavaScript module**
 4. Reload your browser. Change the `?v=` number whenever you update the file, or browsers keep using the old copy.
 
@@ -168,7 +157,7 @@ The [Natural Language To-do Companion](https://github.com/joshmd/natural-languag
    [![Open your Home Assistant instance and open this repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=joshmd&repository=natural-language-todo-companion&category=integration)
 
 2. Restart Home Assistant.
-3. Go to **Settings → Devices & services → Add integration**, search for **Natural Language To-do Companion**, choose **Use my Todoist integration**, and tick your projects.
+3. Go to **Settings → Devices & services → Add integration**, search for **Natural Language To-do Companion**, paste your Todoist API token (Todoist → **Settings → Integrations → Developer**), and tick your projects.
 4. Add the card. In its editor, choose **Todoist, with sections**, then pick a project.
 
 ```yaml
@@ -239,7 +228,7 @@ Collapsed and expanded sections, and **Show more**, are remembered per device. T
 
 - **Setups 1 and 2 add nothing new to Home Assistant.** The card uses the to-do lists and actions Home Assistant already has, with your normal login. It has no API token and talks to no outside service.
 - **Home Assistant users can change lists.** Anyone with a Home Assistant login can add and tick items on lists they can see. That's how Home Assistant's to-do lists already work, with or without this card.
-- **The companion only syncs the projects you tick.** It reads your Todoist integration's token on the server and never sends it to the browser. Only task text, section, due date and order reach the card. See [its privacy notes](https://github.com/joshmd/natural-language-todo-companion#privacy-and-security).
+- **The companion only syncs the projects you tick.** It keeps its Todoist token on the server and never sends it to the browser. Only task text, section, due date and order reach the card. See [its privacy notes](https://github.com/joshmd/natural-language-todo-companion#privacy-and-security).
 - **The YAML bridge is different.** It stores an API token and syncs your whole Todoist account into Home Assistant. Read [its privacy notes](docs/todoist-bridge.md#privacy-and-security), or move to the companion.
 
 ## Troubleshooting
