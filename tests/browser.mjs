@@ -541,8 +541,8 @@ await run('visual editor: switching source, keeping names, dropping defaults', a
     const send = (value) => form.dispatchEvent(new CustomEvent('value-changed', { detail: { value } }));
     send({ ...todoData, sort: 'due', max_items: 5, show_hint: true });
     send({ ...form.data, mode: 'companion', project_id: '' });
-    const companionSchema = form.schema.find((f) => f.name === 'project_id').selector;
-    send({ ...form.data, project_id: 'P1' });
+    const companionSchema = form.schema.find((f) => f.name === 'projects').selector;
+    send({ ...form.data, projects: ['P1'] });
     send({ ...form.data, mode: 'todo', entities: ['todo.c'] });
     return { todoSchema, todoData, changes, companionSchema };
   }, COMPANION_DATA);
@@ -555,7 +555,7 @@ await run('visual editor: switching source, keeping names, dropping defaults', a
     sort: 'due',
     max_items: 5,
   }, 'names and YAML-only options kept; defaults not written');
-  assert.deepEqual(out.companionSchema, { select: { mode: 'dropdown', options: [{ value: 'P1', label: 'Shopping' }] } });
+  assert.deepEqual(out.companionSchema, { select: { multiple: true, mode: 'list', options: [{ value: 'P1', label: 'Shopping' }] } });
   assert.deepEqual(out.changes[2], { type: 'custom:natural-language-todo-card', hide_sections: ['X'], sort: 'due', max_items: 5, project_id: 'P1', source: 'companion' });
   assert.deepEqual(out.changes[3], { type: 'custom:natural-language-todo-card', hide_sections: ['X'], sort: 'due', max_items: 5, entity: 'todo.c' });
 });
@@ -610,6 +610,258 @@ await run('XSS: hostile companion data never runs', async (page) => {
     await tick();
     type(`x /${X('input')}`);
     q('.more').click();
+    await tick(50);
+    return { injected: qa('img').length, pwned: window.pwned, items: qa('.item').length };
+  });
+  assert.equal(out.injected, 0);
+  assert.deepEqual(out.pwned, []);
+  assert.equal(out.items, 3);
+});
+
+
+// ---- v0.4: several projects, subtasks, labels and priority -----------------
+
+const MULTI = {
+  SHOP: {
+    project: { id: 'SHOP', name: 'Weekly Food Shop' },
+    sections: [{ id: 'fv', name: 'Fruit & veg' }, { id: 'bk1', name: 'Bakery' }],
+    tasks: [
+      { id: 's1', content: 'Milk', section_id: null, order: 1 },
+      { id: 's2', content: 'Bananas', section_id: 'fv', order: 1, labels: ['aldi'], priority: 4 },
+      { id: 's3', content: 'Rolls', section_id: 'bk1', order: 1 },
+    ],
+    completed: [{ id: 'c1', content: 'Eggs', section_id: 'fv', completed_at: '2026-10-20T10:00:00Z' }],
+  },
+  JOINT: {
+    project: { id: 'JOINT', name: 'Joint Inbox' },
+    sections: [{ id: 'bk2', name: 'Bakery' }, { id: 'jobs', name: 'Jobs' }],
+    tasks: [
+      { id: 'j1', content: 'Cake', section_id: 'bk2', order: 1 },
+      { id: 'j2', content: 'Fix shelf', section_id: 'jobs', order: 1 },
+    ],
+    completed: [],
+  },
+};
+
+await run('several projects: nested headings, counts, notices and completed labels', async (page) => {
+  const out = await page.evaluate(async (data) => {
+    mount({ projects: ['SHOP', { id: 'JOINT', name: 'Joint' }, 'GONE'], show_completed: true, completed_collapsed: false }, makeHass({ companion: data }));
+    await tick();
+    return {
+      notice: texts('.notice'),
+      projects: texts('.sec.proj .sec-name'),
+      pills: qa('.sec.proj .pill').map((e) => e.textContent),
+      subs: texts('.group.sub .sec-name'),
+      items: texts('.item:not(.done) .text'),
+      count: q('.count').textContent,
+      doneMeta: texts('.item.done .meta'),
+    };
+  }, MULTI);
+  assert.equal(out.notice.length, 1);
+  assert.match(out.notice[0], /GONE isn't ticked in the companion integration/);
+  assert.deepEqual(out.projects, ['Weekly Food Shop', 'Joint']);
+  assert.deepEqual(out.pills, ['3', '2']);
+  assert.deepEqual(out.subs, ['Fruit & veg', 'Bakery', 'Bakery', 'Jobs']);
+  assert.deepEqual(out.items, ['Milk', 'Bananas', 'Rolls', 'Cake', 'Fix shelf']);
+  assert.equal(out.count, '5 open');
+  assert.deepEqual(out.doneMeta, ['Weekly Food Shop · Fruit & veg']);
+});
+
+await run('several projects: flat layout merges sections and labels each item', async (page) => {
+  const out = await page.evaluate(async (data) => {
+    mount({ projects: ['SHOP', 'JOINT'], layout: 'flat' }, makeHass({ companion: data }));
+    await tick();
+    return { heads: texts('.sec-name'), bakery: qa('.group').map((g) => g.textContent.replace(/\s+/g, ' ').trim()), meta: texts('.item .meta') };
+  }, MULTI);
+  assert.deepEqual(out.heads, ['Fruit & veg', 'Bakery', 'Jobs']);
+  assert.ok(out.bakery.some((t) => t.includes('Rolls') && t.includes('Cake')), 'both Bakery sections merged');
+  assert.deepEqual(out.meta, ['Weekly Food Shop', 'Weekly Food Shop', 'Weekly Food Shop', 'Joint Inbox', 'Joint Inbox']);
+});
+
+await run('several projects: where "/" sends new items', async (page) => {
+  const out = await page.evaluate(async (data) => {
+    const hass = makeHass({ companion: data });
+    const result = {};
+    const add = async (cfg, text) => {
+      mount({ projects: ['SHOP', 'JOINT'], ...cfg }, hass);
+      await tick();
+      type(text);
+      const preview = texts('.preview .chip');
+      const before = hass.calls.length;
+      await card._add();
+      const call = hass.calls.slice(before).find((c) => c[0] === 'ws' && c[1].service === 'add_task');
+      return { preview, data: call ? call[1].service_data : null, toast: q('.toast').textContent };
+    };
+    result.none = await add({}, 'tea');
+    result.project = await add({}, 'plant /Joint Inbox');
+    result.unique = await add({}, 'apples /fruit & veg');
+    result.clashDefault = await add({}, 'bread /Bakery');
+    result.explicit = await add({}, 'bread /Joint Inbox/Bakery');
+    result.clashOther = await add({ default_project: 'JOINT' }, 'bread /Bakery');
+    result.noDefault = await add({ projects: ['SHOP', 'JOINT'], default_project: 'JOINT' }, 'apples /Jobs');
+    return result;
+  }, MULTI);
+  assert.deepEqual(out.none.data, { text: 'tea', project_id: 'SHOP' });
+  assert.deepEqual(out.none.preview, ['Weekly Food Shop']);
+  assert.deepEqual(out.project.data, { text: 'plant', project_id: 'JOINT' });
+  assert.deepEqual(out.unique.data, { text: 'apples', project_id: 'SHOP', section_id: 'fv' });
+  assert.deepEqual(out.unique.preview, ['Weekly Food Shop › Fruit & veg']);
+  assert.deepEqual(out.clashDefault.data, { text: 'bread', project_id: 'SHOP', section_id: 'bk1' }, 'default project wins');
+  assert.deepEqual(out.explicit.data, { text: 'bread', project_id: 'JOINT', section_id: 'bk2' });
+  assert.deepEqual(out.clashOther.data, { text: 'bread', project_id: 'JOINT', section_id: 'bk2' });
+  assert.deepEqual(out.noDefault.data, { text: 'apples', project_id: 'JOINT', section_id: 'jobs' });
+  assert.match(out.explicit.toast, /to Joint Inbox › Bakery/);
+});
+
+await run('several projects: a clash with no default asks you to be specific', async (page) => {
+  const out = await page.evaluate(async (data) => {
+    const three = { ...data, OTHER: { project: { id: 'OTHER', name: 'Other' }, sections: [], tasks: [], completed: [] } };
+    const hass = makeHass({ companion: three });
+    mount({ projects: ['OTHER', 'SHOP', 'JOINT'] }, hass);
+    await tick();
+    type('bread /Bakery');
+    const preview = texts('.preview .chip');
+    await card._add();
+    return { preview, sent: hass.calls.some((c) => c[1]?.service === 'add_task'), toast: q('.toast').textContent, input: q('#tsc-input').value };
+  }, MULTI);
+  assert.match(out.preview[0], /Bakery is in more than one project. Type \/Weekly Food Shop\/Bakery or \/Joint Inbox\/Bakery/);
+  assert.equal(out.sent, false);
+  assert.match(out.toast, /more than one project/);
+  assert.equal(out.input, 'bread /Bakery', 'text kept');
+});
+
+await run('several projects: max_items across projects, collapsing and hiding', async (page) => {
+  const out = await page.evaluate(async (data) => {
+    const hass = makeHass({ companion: data });
+    mount({ projects: ['SHOP', 'JOINT'], max_items: 2, hide_sections: ['Joint Inbox/Jobs'], collapsed_sections: [] }, hass);
+    await tick();
+    const limited = { items: texts('.item .text'), projects: texts('.sec.proj .sec-name'), more: q('.more').textContent };
+    mount({ projects: ['SHOP', 'JOINT'], collapsed_sections: ['Weekly Food Shop'] }, hass);
+    await tick();
+    const collapsed = texts('.item .text');
+    q('.sec.proj[data-key="project:SHOP"]').click();
+    await tick();
+    return { limited, collapsed, expanded: texts('.item .text') };
+  }, MULTI);
+  assert.deepEqual(out.limited.items, ['Milk', 'Bananas']);
+  assert.deepEqual(out.limited.projects, ['Weekly Food Shop'], 'second project past the cut');
+  assert.equal(out.limited.more, 'Show 2 more', 'Jobs is hidden, so only Rolls and Cake are left');
+  assert.deepEqual(out.collapsed, ['Cake', 'Fix shelf']);
+  assert.deepEqual(out.expanded, ['Milk', 'Bananas', 'Rolls', 'Cake', 'Fix shelf']);
+});
+
+await run('subtasks are indented under their parent', async (page) => {
+  const out = await page.evaluate(async () => {
+    mount({ project_id: 'P', sort: 'alphabetical' }, makeHass({ companion: { P: {
+      project: { id: 'P', name: 'P' }, sections: [], completed: [],
+      tasks: [
+        { id: 'c2', content: 'Zest lemons', parent_id: 'p', order: 2 },
+        { id: 'p', content: 'Bake cake', order: 1 },
+        { id: 'c1', content: 'Buy flour', parent_id: 'p', order: 1 },
+        { id: 'g', content: 'Sieve flour', parent_id: 'c1', order: 1 },
+        { id: 'a', content: 'Apples', order: 3 },
+        { id: 'o', content: 'Orphan', parent_id: 'missing', order: 4 },
+        { id: 'x', content: 'Loop A', parent_id: 'y' },
+        { id: 'y', content: 'Loop B', parent_id: 'x' },
+      ],
+    } } }));
+    await tick();
+    return qa('.item').map((li) => [li.querySelector('.text').textContent, (li.className.match(/d(\d)/) || [0, 0])[1] * 1]);
+  });
+  assert.deepEqual(out.slice(0, 6), [
+    ['Apples', 0], ['Bake cake', 0], ['Buy flour', 1], ['Sieve flour', 2], ['Zest lemons', 1], ['Orphan', 0],
+  ]);
+  assert.equal(out.length, 8, 'items in a parent loop still show');
+});
+
+await run('labels and priority chips', async (page) => {
+  const out = await page.evaluate(async () => {
+    const data = { P: { project: { id: 'P', name: 'P' }, sections: [], completed: [], tasks: [
+      { id: '1', content: 'Urgent', priority: 4, labels: ['home', 'call', 'phone', 'extra'] },
+      { id: '2', content: 'Normal', priority: 1, labels: [] },
+      { id: '3', content: 'Medium', priority: 3 },
+    ] } };
+    mount({ project_id: 'P' }, makeHass({ companion: data }));
+    await tick();
+    const shown = qa('.item').map((li) => [li.querySelector('.text').textContent, [...li.querySelectorAll('.tag')].map((t) => t.textContent)]);
+    mount({ project_id: 'P', show_labels: false, show_priority: false }, makeHass({ companion: data }));
+    await tick();
+    return { shown, hidden: qa('.tag').length };
+  });
+  assert.deepEqual(out.shown, [
+    ['Urgent', ['P1', '@home', '@call', '@phone', '+1']],
+    ['Normal', []],
+    ['Medium', ['P2']],
+  ]);
+  assert.equal(out.hidden, 0);
+});
+
+await run('several projects: configuration checks', async (page) => {
+  const out = await page.evaluate(() => {
+    const res = [];
+    for (const cfg of [
+      { projects: ['A', 'B'], source: 'todoist_bridge' },
+      { projects: ['A', 'bad/id'] },
+      { projects: ['A', 'B'], default_project: 'C' },
+      { projects: ['A', 'B'], layout: 'grid' },
+      { projects: 'A' },
+      { projects: ['A', 'A', { id: 'B', name: 'Bee' }] },
+    ]) {
+      try {
+        const el = document.createElement('natural-language-todo-card');
+        el.setConfig(cfg);
+        res.push(el._config._projects.map((p) => p.id + (p.name ? `=${p.name}` : '')).join(','));
+      } catch (e) {
+        res.push('rejected');
+      }
+    }
+    return res;
+  });
+  assert.deepEqual(out, ['rejected', 'rejected', 'rejected', 'rejected', 'rejected', 'A,B=Bee']);
+});
+
+await run('editor: several projects, layout and default project', async (page) => {
+  const out = await page.evaluate(async (data) => {
+    customElements.define('ha-form', class extends HTMLElement {});
+    const hass = makeHass({ companion: data });
+    hass.callWS = async () => ({ projects: [{ id: 'SHOP', name: 'Weekly Food Shop' }, { id: 'JOINT', name: 'Joint Inbox' }] });
+    const editor = document.createElement('natural-language-todo-card-editor');
+    const changes = [];
+    editor.addEventListener('config-changed', (e) => changes.push(e.detail.config));
+    document.body.appendChild(editor);
+    editor.hass = hass;
+    editor.setConfig({ type: 'custom:natural-language-todo-card', projects: [{ id: 'JOINT', name: 'Joint' }], source: 'companion' });
+    await tick();
+    const form = editor.querySelector('ha-form');
+    const send = (value) => form.dispatchEvent(new CustomEvent('value-changed', { detail: { value } }));
+    const one = form.schema.map((f) => f.name);
+    send({ ...form.data, projects: ['SHOP', 'JOINT'] });
+    const two = form.schema.map((f) => f.name);
+    send({ ...form.data, layout: 'flat', default_project: 'JOINT', show_labels: false });
+    send({ ...form.data, projects: ['SHOP'] });
+    return { one, two, changes, defaults: form.data };
+  }, MULTI);
+  assert.ok(!out.one.includes('layout'));
+  assert.deepEqual(out.two.slice(0, 4), ['mode', 'projects', 'layout', 'default_project']);
+  assert.deepEqual(out.changes[0], { type: 'custom:natural-language-todo-card', source: 'companion', projects: ['SHOP', { id: 'JOINT', name: 'Joint' }] }, 'custom name kept');
+  assert.deepEqual(out.changes[1], {
+    type: 'custom:natural-language-todo-card', source: 'companion', projects: ['SHOP', { id: 'JOINT', name: 'Joint' }],
+    layout: 'flat', default_project: 'JOINT', show_labels: false,
+  });
+  assert.deepEqual(out.changes[2], { type: 'custom:natural-language-todo-card', source: 'companion', project_id: 'SHOP', show_labels: false }, 'layout options dropped for one project');
+});
+
+await run('XSS: hostile project names, labels and section paths never run', async (page) => {
+  const out = await page.evaluate(async () => {
+    const X = (n) => `<img src=x onerror="window.pwned.push('${n}')">"'`;
+    mount({ projects: ['A', { id: 'B', name: X('cfg') }], show_completed: true, completed_collapsed: false, layout: 'nested' }, makeHass({ companion: {
+      A: { project: { id: 'A', name: X('pname') }, sections: [{ id: 's', name: X('sname') }],
+        tasks: [{ id: 't', content: 'x', section_id: 's', labels: [X('label')], priority: X('prio') }, { id: 'u', content: X('sub'), parent_id: 't' }],
+        completed: [{ id: 'c', content: 'done', section_id: 's' }] },
+      B: { project: { id: 'B', name: 'b' }, sections: [{ id: 's2', name: X('sname') }], tasks: [], completed: [] },
+    } }));
+    await tick();
+    type(`y /${X('pname')}/${X('sname')}`);
     await tick(50);
     return { injected: qa('img').length, pwned: window.pwned, items: qa('.item').length };
   });

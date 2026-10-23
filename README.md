@@ -54,7 +54,7 @@ HACS registers the dashboard resource for you.
 1. Download `natural-language-todo-card.js` from the [latest release](https://github.com/joshmd/natural-language-todo/releases/latest).
 2. Copy it to `/config/www/natural-language-todo-card.js`.
 3. Go to **Settings** → **Dashboards** → three-dot menu → **Resources** → **Add resource**:
-   - URL: `/local/natural-language-todo-card.js?v=0.3.1`
+   - URL: `/local/natural-language-todo-card.js?v=0.4.0`
    - Resource type: **JavaScript module**
 4. Reload your browser. Change the `?v=` number whenever you update the file, or browsers keep using the old copy.
 
@@ -172,6 +172,37 @@ Type `/` and a section's name to add to that section: `croissants tomorrow /Bake
 
 If the companion isn't installed, the card says so and links to it.
 
+Tasks show their **subtasks** indented underneath, and their **priority** (P1 to P3) and **@labels** as small tags. Turn the tags off with `show_labels: false` or `show_priority: false`.
+
+### Several projects in one card
+
+Pick more than one project in the editor, or list them:
+
+```yaml
+type: custom:natural-language-todo-card
+source: companion
+projects:
+  - 6Jf8VQXxpwv59GRH
+  - id: 6Crfh62CHW6r9wc5
+    name: Joint            # optional: rename the heading
+layout: nested             # or flat
+default_project: 6Jf8VQXxpwv59GRH   # optional: where items go with no "/"
+```
+
+- **Nested** (default): each project is a collapsible heading, with its sections inside.
+- **Flat:** sections with the same name are merged across projects, and each item shows its project.
+
+Typing `/` works across all the projects in the card:
+
+| You type | Goes to |
+|---|---|
+| no `/` | The default project (the first, unless you set `default_project`) |
+| `/Joint Inbox` | That project, with no section |
+| `/Bakery` | The project that has a Bakery section. If several do, the default project's, or if it has none, the card asks you to be specific |
+| `/Weekly Food Shop/Bakery` | Exactly that project and section |
+
+The preview shows the full destination before you save. If one project can't be loaded, the card shows a note for it and still shows the others. `hide_sections` and `collapsed_sections` accept a section name (every project), `Project/Section` (one project) or a project name.
+
 ---
 
 ## Card size
@@ -184,13 +215,18 @@ If the companion isn't installed, the card says so and links to it.
 
 ## Options
 
-Most options can be set in the visual editor. These are YAML only: `hide_sections`, `collapsed_sections`, `completed_collapsed`, `show_unsectioned`, `unsectioned_title`, `todoist_project`, custom list `name:`s and the bridge options. The editor keeps them when you change other settings.
+Most options can be set in the visual editor. These are YAML only: `hide_sections`, `collapsed_sections`, `completed_collapsed`, `show_unsectioned`, `unsectioned_title`, `todoist_project`, custom list and project `name:`s, and the bridge options. The editor keeps them when you change other settings.
 
 | Option | Default | Description |
 |---|---|---|
 | `entity` | | The to-do list to show (setups 1 and 2) |
 | `entities` | | Several lists, one section each. Each entry is an entity ID, or `entity:` plus an optional `name:` |
 | `project_id` | | Setup 3: the Todoist project |
+| `projects` | | Setup 3: several Todoist projects in one card. Each entry is a project ID, or `id:` plus an optional `name:` |
+| `layout` | `nested` | With several projects: `nested` (projects as headings) or `flat` (sections merged by name) |
+| `default_project` | first project | With several projects: where items go when you don't type `/` |
+| `show_labels` | `true` | Setup 3: show a task's @labels as tags |
+| `show_priority` | `true` | Setup 3: show a task's priority (P1 to P3) as a tag |
 | `title` | none | Card heading |
 | `sort` | `manual` | `due` (overdue first, then by date and time, undated last), `alphabetical`, or `manual` (the list's own order). Sorting applies within each section. New cards from the picker start with `due` |
 | `max_items` | `0` | Show at most this many open items, then a **Show more** button. `0` shows everything |
@@ -211,7 +247,7 @@ Most options can be set in the visual editor. These are YAML only: `hide_section
 | `count_suffix` | `open` | Text after the count, for example `to get` |
 | `show_hint` | `true` | Show the example under the add field |
 | `accent` | theme accent | Any CSS colour for the + button, ticks and today chips |
-| `source` | `auto` | `todo`, `companion` or `todoist_bridge`. Normally worked out: `entity` means `todo`, and `project_id` means the companion if it's installed, otherwise the bridge |
+| `source` | `auto` | `todo`, `companion` or `todoist_bridge`. Normally worked out: `entity` means `todo`, and `project_id` or `projects` means the companion if it's installed, otherwise the bridge (one project only) |
 
 The Todoist bridge has a few extra options, listed in [its guide](docs/todoist-bridge.md#bridge-only-options).
 
@@ -228,7 +264,7 @@ Collapsed and expanded sections, and **Show more**, are remembered per device. T
 
 - **Setups 1 and 2 add nothing new to Home Assistant.** The card uses the to-do lists and actions Home Assistant already has, with your normal login. It has no API token and talks to no outside service.
 - **Home Assistant users can change lists.** Anyone with a Home Assistant login can add and tick items on lists they can see. That's how Home Assistant's to-do lists already work, with or without this card.
-- **The companion only syncs the projects you tick.** It keeps its Todoist token on the server and never sends it to the browser. Only task text, section, due date and order reach the card. See [its privacy notes](https://github.com/joshmd/natural-language-todo-companion#privacy-and-security).
+- **The companion only syncs the projects you tick.** It keeps its Todoist token on the server and never sends it to the browser. Only task text, section, parent task, due date, order, labels and priority reach the card. See [its privacy notes](https://github.com/joshmd/natural-language-todo-companion#privacy-and-security).
 - **The YAML bridge is different.** It stores an API token and syncs your whole Todoist account into Home Assistant. Read [its privacy notes](docs/todoist-bridge.md#privacy-and-security), or move to the companion.
 
 ## Troubleshooting

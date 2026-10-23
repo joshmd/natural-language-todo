@@ -19,7 +19,7 @@
  * The card never holds an API token. No build step, no dependencies.
  */
 
-const CARD_VERSION = '0.3.1';
+const CARD_VERSION = '0.4.0';
 
 const DEFAULTS = {
   title: '',
@@ -28,8 +28,13 @@ const DEFAULTS = {
   entities: [],
   todoist_project: '',
   parse_dates: true,
-  // todoist_bridge source
+  // Todoist (companion, or the YAML bridge for one project)
   project_id: '',
+  projects: [], // several companion projects in one card
+  layout: 'nested', // nested | flat, with several projects
+  default_project: '', // where items go with no "/"; default the first
+  show_labels: true,
+  show_priority: true,
   tasks_entity: 'sensor.todoist_tasks',
   sections_entity: 'sensor.todoist_sections',
   completed_entity: 'sensor.todoist_completed',
@@ -58,6 +63,8 @@ const DEFAULTS = {
 
 const SOURCES = ['auto', 'todo', 'companion', 'todoist_bridge'];
 const SORTS = ['manual', 'due', 'alphabetical'];
+const LAYOUTS = ['nested', 'flat'];
+const TODOIST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const DUE_DISPLAY = ['all', 'soon', 'none'];
 const COMPLETED_KEY = '__completed';
 const UNSECTIONED_KEY = '__none';
@@ -446,6 +453,9 @@ class BridgeSource {
       id: String(t.id ?? t.task_id),
       content: t.content,
       sectionKey: t.section_id ? String(t.section_id) : null,
+      parentId: t.parent_id ? String(t.parent_id) : null,
+      labels: Array.isArray(t.labels) ? t.labels.map(String) : [],
+      priority: Number(t.priority) || null,
       due: d ? { date: d.date, datetime: d.datetime } : null,
       recurring: !!d?.is_recurring,
       order: t.child_order ?? 1e9,
@@ -513,16 +523,21 @@ class CompanionSource {
   constructor(config, onChange) {
     this.c = config;
     this.onChange = onChange;
-    this.data = null;
-    this.error = null;
+    this.projects = config._projects; // [{ id, name }]
+    this.data = new Map(); // project id -> latest message from the companion
+    this.errors = new Map(); // project id -> message
     this.rev = 0;
     this.gen = 0;
-    this.unsub = null;
+    this.unsubs = [];
     this.connected = false;
   }
 
   static available(hass) {
     return !!hass?.services?.[COMPANION_DOMAIN];
+  }
+
+  get multiProject() {
+    return this.projects.length > 1;
   }
 
   _changed() {
@@ -537,26 +552,33 @@ class CompanionSource {
     if (this.connected || !CompanionSource.available(hass)) return;
     this.connected = true;
     const gen = ++this.gen;
+    for (const p of this.projects) this._subscribe(hass, p, gen);
+  }
+
+  _subscribe(hass, p, gen) {
     hass.connection
       .subscribeMessage(
         (msg) => {
           if (gen !== this.gen) return;
-          this.data = msg;
-          this.error = null;
+          this.data.set(p.id, msg);
+          this.errors.delete(p.id);
           this._changed();
         },
-        { type: `${COMPANION_DOMAIN}/subscribe`, project_id: this.c.project_id },
+        { type: `${COMPANION_DOMAIN}/subscribe`, project_id: p.id },
       )
       .then((unsub) => {
         if (gen !== this.gen) unsub();
-        else this.unsub = unsub;
+        else this.unsubs.push(unsub);
       })
       .catch((err) => {
         if (gen !== this.gen) return;
-        this.error =
+        const name = p.name || p.id;
+        this.errors.set(
+          p.id,
           err?.code === 'not_found'
-            ? `Project ${this.c.project_id} isn't ticked in the companion integration. Add it under Settings → Devices & services → Natural Language To-do Companion → Configure.`
-            : `The companion integration couldn't load this project: ${err?.message || 'unknown error'}`;
+            ? `Project ${name} isn't ticked in the companion integration. Add it under Settings → Devices & services → Natural Language To-do Companion → Configure.`
+            : `The companion integration couldn't load ${name}: ${err?.message || 'unknown error'}`,
+        );
         this._changed();
       });
   }
@@ -564,12 +586,14 @@ class CompanionSource {
   disconnect() {
     this.connected = false;
     this.gen += 1;
-    try {
-      this.unsub?.();
-    } catch (e) {
-      /* already closed */
+    for (const u of this.unsubs) {
+      try {
+        u();
+      } catch (e) {
+        /* already closed */
+      }
     }
-    this.unsub = null;
+    this.unsubs = [];
   }
 
   version(hass) {
@@ -580,12 +604,24 @@ class CompanionSource {
     return this.rev;
   }
 
-  _norm(t, completed) {
+  _projectName(p) {
+    return p.name || this.data.get(p.id)?.project?.name || p.id;
+  }
+
+  _defaultProject() {
+    return this.projects.find((p) => p.id === this.c.default_project) || this.projects[0];
+  }
+
+  _norm(t, completed, projectKey) {
     const d = t.due;
     return {
       id: String(t.id),
       content: t.content,
       sectionKey: t.section_id ? String(t.section_id) : null,
+      projectKey,
+      parentId: t.parent_id ? String(t.parent_id) : null,
+      labels: Array.isArray(t.labels) ? t.labels.map(String) : [],
+      priority: Number(t.priority) || null,
       due: d ? { date: d.date, datetime: d.datetime } : null,
       recurring: !!d?.is_recurring,
       order: t.order ?? 1e9,
@@ -597,13 +633,23 @@ class CompanionSource {
     if (!CompanionSource.available(hass)) {
       return { error: 'This card needs the Natural Language To-do Companion integration.', install: true };
     }
-    if (this.error) return { error: this.error };
-    if (!this.data) return { loading: true };
-    return {
-      sections: (this.data.sections || []).map((s) => ({ key: String(s.id), name: s.name })),
-      items: (this.data.tasks || []).map((t) => this._norm(t, false)),
-      completed: (this.data.completed || []).map((t) => this._norm(t, true)),
-    };
+    const loaded = this.projects.filter((p) => this.data.has(p.id));
+    const failed = this.projects.filter((p) => this.errors.has(p.id));
+    if (loaded.length + failed.length < this.projects.length) return { loading: true };
+    // One project with a problem doesn't blank the others: it becomes a notice.
+    if (!loaded.length) return { error: this.errors.get(failed[0].id) };
+    const out = { projects: [], sections: [], items: [], completed: [], notices: failed.map((p) => this.errors.get(p.id)) };
+    for (const p of loaded) {
+      const d = this.data.get(p.id);
+      const name = this._projectName(p);
+      out.projects.push({ key: p.id, name });
+      for (const s of d.sections || []) {
+        out.sections.push({ key: String(s.id), name: s.name, projectKey: p.id, projectName: name });
+      }
+      for (const t of d.tasks || []) out.items.push(this._norm(t, false, p.id));
+      for (const t of d.completed || []) out.completed.push(this._norm(t, true, p.id));
+    }
+    return out;
   }
 
   caps() {
@@ -614,21 +660,70 @@ class CompanionSource {
     return firstSection ? `Try: milk tomorrow 5pm /${firstSection}` : 'Try: milk tomorrow 5pm';
   }
 
+  // With several projects, "/" can name "Project/Section", a section or a
+  // project. A section name found in more than one project goes to the
+  // default project's one, or asks the user to be specific.
+  sectionCandidates(visible) {
+    if (!this.multiProject) return visible;
+    const def = this._defaultProject().id;
+    const out = [];
+    const byName = new Map();
+    for (const s of visible) {
+      out.push({ key: s.key, name: `${s.projectName}/${s.name}`, projectKey: s.projectKey, sectionKey: s.key, label: `${s.projectName} › ${s.name}` });
+      const k = lower(s.name);
+      if (!byName.has(k)) byName.set(k, []);
+      byName.get(k).push(s);
+    }
+    for (const [k, list] of byName) {
+      const pick = list.length === 1 ? list[0] : list.find((s) => s.projectKey === def);
+      if (pick) {
+        out.push({ key: pick.key, name: pick.name, projectKey: pick.projectKey, sectionKey: pick.key, label: `${pick.projectName} › ${pick.name}` });
+      } else {
+        out.push({
+          key: `ambiguous:${k}`,
+          name: list[0].name,
+          label: list[0].name,
+          ambiguous: true,
+          choices: list.map((s) => `/${s.projectName}/${s.name}`),
+        });
+      }
+    }
+    for (const p of this.projects) {
+      const name = this._projectName(p);
+      if (!byName.has(lower(name))) out.push({ key: `project:${p.id}`, name, projectKey: p.id, sectionKey: null, label: name });
+    }
+    return out;
+  }
+
+  placement(parsed) {
+    const s = parsed.section;
+    if (!s) return { projectKey: this._defaultProject().id, sectionKey: null };
+    // Multi-project candidates carry sectionKey (null for a whole project);
+    // plain sections carry only key.
+    return {
+      projectKey: s.projectKey || this.projects[0].id,
+      sectionKey: 'sectionKey' in s ? s.sectionKey : s.key,
+    };
+  }
+
+  targetName(hass, section) {
+    if (!this.multiProject) return null;
+    return section?.label || this._projectName(this._defaultProject());
+  }
+
   async add(hass, parsed) {
+    const { projectKey, sectionKey } = this.placement(parsed);
     const res = await hass.connection.sendMessagePromise({
       type: 'call_service',
       domain: COMPANION_DOMAIN,
       service: 'add_task',
-      service_data: {
-        text: parsed.text,
-        project_id: this.c.project_id,
-        ...(parsed.section ? { section_id: parsed.section.key } : {}),
-      },
+      service_data: { text: parsed.text, project_id: projectKey, ...(sectionKey ? { section_id: sectionKey } : {}) },
       return_response: true,
     });
     const r = res?.response || {};
     let msg = `Added ${r.content || parsed.text}`;
-    if (parsed.section) msg += ` to ${parsed.section.name}`;
+    const target = parsed.section?.label || parsed.section?.name || this.targetName(hass, null);
+    if (target) msg += ` to ${target}`;
     if (r.due) msg += `, due ${r.due}`;
     if (r.moved === false) return { message: `${msg}. It could not be moved into this list, check Todoist.`, warn: true };
     return { message: msg };
@@ -938,6 +1033,10 @@ const STYLES = `
   .pill { font-size: 12px; min-width: 20px; padding: 1px 7px; border-radius: 999px; background: var(--tsc-field); color: var(--primary-text-color); text-align: center; }
   .chev { transition: transform 0.15s; }
   .sec[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+  .sec.proj { color: var(--primary-text-color); }
+  .sec.proj .sec-name { font-size: 15px; font-weight: 600; }
+  .group.sub .sec { padding-left: 14px; margin-top: 0; border-top-style: dotted; }
+  .notice { font-size: 13px; padding: 8px 4px; color: var(--warning-color, #ff9800); }
 
   .item { display: flex; align-items: center; gap: 6px; min-height: 44px; }
   .box { width: 44px; height: 44px; margin-left: -8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
@@ -945,7 +1044,16 @@ const STYLES = `
   .tick svg { visibility: hidden; }
   .item.done .tick { background: var(--tsc-accent); border-color: var(--tsc-accent); }
   .item.done .tick svg { visibility: visible; }
-  .text { flex: 1; font-size: 16px; color: var(--primary-text-color); word-break: break-word; }
+  .body { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; }
+  .text { font-size: 16px; color: var(--primary-text-color); word-break: break-word; }
+  .tags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+  .tag { font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 999px; background: var(--tsc-field); color: var(--secondary-text-color); }
+  .tag.p1 { background: color-mix(in srgb, #d1453b 28%, transparent); color: var(--primary-text-color); }
+  .tag.p2 { background: color-mix(in srgb, #eb8909 28%, transparent); color: var(--primary-text-color); }
+  .tag.p3 { background: color-mix(in srgb, #246fe0 28%, transparent); color: var(--primary-text-color); }
+  .item.d1 { padding-left: 24px; }
+  .item.d2 { padding-left: 48px; }
+  .item.d3 { padding-left: 72px; }
   .item.done .text { text-decoration: line-through; color: var(--secondary-text-color); }
   .item.busy { opacity: 0.55; }
   .due { font-size: 12px; padding: 3px 8px; border-radius: 999px; white-space: nowrap; background: var(--tsc-field); color: var(--primary-text-color); }
@@ -960,7 +1068,7 @@ const STYLES = `
 function normaliseConfig(config) {
   if (!config) throw new Error('natural-language-todo-card: configuration is missing');
   const c = { ...DEFAULTS, ...config };
-  for (const key of ['hide_sections', 'collapsed_sections', 'entities']) {
+  for (const key of ['hide_sections', 'collapsed_sections', 'entities', 'projects']) {
     if (!Array.isArray(c[key])) throw new Error(`natural-language-todo-card: ${key} must be a list`);
   }
   if (!SOURCES.includes(c.source)) {
@@ -971,6 +1079,23 @@ function normaliseConfig(config) {
   }
   if (!SORTS.includes(c.sort)) {
     throw new Error(`natural-language-todo-card: sort must be one of ${SORTS.join(', ')}`);
+  }
+  if (!LAYOUTS.includes(c.layout)) {
+    throw new Error(`natural-language-todo-card: layout must be one of ${LAYOUTS.join(', ')}`);
+  }
+  const seen = new Set();
+  c._projects = [
+    ...(c.project_id ? [{ id: c.project_id }] : []),
+    ...c.projects.map((p) => (p && typeof p === 'object' ? { id: p.id, name: p.name } : { id: p })),
+  ]
+    .map((p) => ({ id: String(p.id ?? ''), name: p.name ? String(p.name) : '' }))
+    .filter((p) => !seen.has(p.id) && seen.add(p.id));
+  for (const { id } of c._projects) {
+    if (!TODOIST_ID.test(id)) throw new Error(`natural-language-todo-card: "${id}" is not a Todoist project ID`);
+  }
+  c.default_project = c.default_project ? String(c.default_project) : '';
+  if (c.default_project && !seen.has(c.default_project)) {
+    throw new Error('natural-language-todo-card: default_project must be one of the projects');
   }
   if (typeof c.max_height === 'number') c.max_height = `${c.max_height}px`;
   c.max_height = String(c.max_height ?? '').trim();
@@ -993,10 +1118,13 @@ function normaliseConfig(config) {
   if (c.source === 'todo' && !c._entities.length) {
     throw new Error('natural-language-todo-card: set entity (or entities) to a to-do list');
   }
-  if (c.source !== 'todo' && !c.project_id) {
+  if (c.source !== 'todo' && !c._projects.length) {
     throw new Error('natural-language-todo-card: set entity to a to-do list, or project_id for a Todoist project');
   }
-  c.project_id = String(c.project_id);
+  if (c.source === 'todoist_bridge' && c._projects.length > 1) {
+    throw new Error('natural-language-todo-card: the YAML bridge shows one project; use the companion integration for several');
+  }
+  c.project_id = c._projects[0]?.id ?? '';
   c.add_timeout = Math.max(0, Number(c.add_timeout) || 0);
   c.completed_limit = Math.max(1, Number(c.completed_limit) || DEFAULTS.completed_limit);
   return c;
@@ -1034,7 +1162,7 @@ class NaturalLanguageTodoCard extends CardBase {
     this._config = c;
     this._source = null;
     if (this._hass) this._makeSource(this._hass);
-    const key = c.source === 'todo' ? c._entities.map((e) => e.entity).join(',') : c.project_id;
+    const key = c.source === 'todo' ? c._entities.map((e) => e.entity).join(',') : c._projects.map((p) => p.id).join(',');
     this._storeKey = `natural-language-todo-card:${key}`;
     this._collapsed = this._loadCollapsed();
     this._built = false;
@@ -1056,7 +1184,8 @@ class NaturalLanguageTodoCard extends CardBase {
     const c = this._config;
     const onChange = () => this._renderList(true);
     let kind = c.source;
-    if (kind === 'todoist') kind = CompanionSource.available(hass) ? 'companion' : 'todoist_bridge';
+    // Several projects need the companion; without it, its install note shows.
+    if (kind === 'todoist') kind = CompanionSource.available(hass) || c._projects.length > 1 ? 'companion' : 'todoist_bridge';
     this._source =
       kind === 'todo'
         ? new TodoSource(c, onChange)
@@ -1202,9 +1331,10 @@ class NaturalLanguageTodoCard extends CardBase {
 
   _parse(raw) {
     const caps = this._source.caps(this._hass);
+    const visible = this._visibleSections();
     return parseInput(raw, {
       sectionMode: caps.sectionMode,
-      sections: this._visibleSections(),
+      sections: this._source.sectionCandidates ? this._source.sectionCandidates(visible) : visible,
       capsFor: caps.parse,
       dayFirst: this._dayFirst(),
     });
@@ -1222,8 +1352,10 @@ class NaturalLanguageTodoCard extends CardBase {
     const p = this._parse(raw);
     const chips = [];
     const target = this._source.targetName?.(this._hass, p.section);
-    if (p.section && p.section.key === null) chips.push(`<span class="chip">Section ${esc(p.section.name)} (checked by Todoist)</span>`);
-    else if (p.section) chips.push(`<span class="chip">${esc(p.section.name)}</span>`);
+    if (p.section?.ambiguous) {
+      chips.push(`<span class="chip warn">${esc(p.section.name)} is in more than one project. Type ${esc(p.section.choices.join(' or '))}</span>`);
+    } else if (p.section && p.section.key === null) chips.push(`<span class="chip">Section ${esc(p.section.name)} (checked by Todoist)</span>`);
+    else if (p.section) chips.push(`<span class="chip">${esc(p.section.label || p.section.name)}</span>`);
     else if (target) chips.push(`<span class="chip">${esc(target)}</span>`);
     if (p.unmatched) {
       const where = target ? `Adds to ${target}.` : 'Adds without a section.';
@@ -1249,13 +1381,20 @@ class NaturalLanguageTodoCard extends CardBase {
       this._toast('Type an item name as well.', true);
       return;
     }
+    if (parsed.section?.ambiguous) {
+      this._toast(`${parsed.section.name} is in more than one project. Type ${parsed.section.choices.join(' or ')}.`, true);
+      return;
+    }
     const snap = this._source.snapshot(this._hass);
     const same = (t) => lower(t.content) === lower(parsed.text);
-    const sectionKey = parsed.section?.key ?? (this._source.multi ? this._source._target(null) : null);
+    const place = this._source.placement
+      ? this._source.placement(parsed)
+      : { sectionKey: parsed.section?.key ?? (this._source.multi ? this._source._target(null) : null) };
     const temp = {
       id: `tmp-${Date.now()}-${Math.random()}`,
       content: parsed.text,
-      sectionKey,
+      sectionKey: place.sectionKey,
+      projectKey: place.projectKey,
       before: (snap.items || []).filter(same).length,
       at: Date.now(),
     };
@@ -1281,7 +1420,7 @@ class NaturalLanguageTodoCard extends CardBase {
 
   _addedMessage(p) {
     let msg = `Added ${p.text}`;
-    const target = p.section?.name || this._source.targetName?.(this._hass, p.section);
+    const target = p.section?.label || p.section?.name || this._source.targetName?.(this._hass, p.section);
     if (target) msg += ` to ${target}`;
     if (p.recurrence) msg += `, repeating ${p.recurrence}`;
     else if (p.due) {
@@ -1314,7 +1453,12 @@ class NaturalLanguageTodoCard extends CardBase {
   _visibleSections() {
     const snap = this._source.snapshot(this._hass);
     const hidden = this._hiddenSet();
-    return (snap.sections || []).filter((s) => !hidden.has(lower(s.key)) && !hidden.has(lower(s.name)));
+    return (snap.sections || []).filter(
+      (s) =>
+        !hidden.has(lower(s.key)) &&
+        !hidden.has(lower(s.name)) &&
+        !(s.projectName && hidden.has(lower(`${s.projectName}/${s.name}`))),
+    );
   }
 
   _data() {
@@ -1364,19 +1508,52 @@ class NaturalLanguageTodoCard extends CardBase {
     }
     for (const t of this._pendingAdds) open.push({ ...t, due: null, order: 1e9, _busy: true, _temp: true });
 
-    const byOrder = this._sorter();
+    const sorter = this._sorter();
+    const multi = snap.projects && snap.projects.length > 1 ? snap.projects : null;
     const groups = [];
-    if (c.show_unsectioned) {
-      const list = open.filter((t) => groupKey(t) === UNSECTIONED_KEY).sort(byOrder);
+    const unsectioned = (list) => list.filter((t) => groupKey(t) === UNSECTIONED_KEY);
+    const pushUnsectioned = (list, key, parentKey) => {
+      if (!c.show_unsectioned) return;
       if (list.length || (c.unsectioned_title && !c.hide_empty_sections)) {
         const header = !!c.unsectioned_title;
-        groups.push({ key: UNSECTIONED_KEY, name: c.unsectioned_title, header, items: list, collapsed: header && this._isCollapsed(UNSECTIONED_KEY) });
+        groups.push({ key, name: c.unsectioned_title, header, items: this._nest(list, sorter), collapsed: header && this._isCollapsed(key), parentKey });
       }
-    }
-    for (const s of visible) {
-      const list = open.filter((t) => groupKey(t) === s.key).sort(byOrder);
-      if (!list.length && c.hide_empty_sections) continue;
-      groups.push({ key: s.key, name: s.name, header: true, items: list, collapsed: this._isCollapsed(s.key, s.name) });
+    };
+    const pushSection = (key, name, list, parentKey, altNames = []) => {
+      if (!list.length && c.hide_empty_sections) return;
+      groups.push({ key, name, header: true, items: this._nest(list, sorter), collapsed: this._isCollapsed(key, name, ...altNames), parentKey });
+    };
+
+    if (!multi) {
+      pushUnsectioned(unsectioned(open), UNSECTIONED_KEY);
+      for (const s of visible) {
+        const alt = s.projectName ? [`${s.projectName}/${s.name}`] : [];
+        pushSection(s.key, s.name, open.filter((t) => groupKey(t) === s.key), undefined, alt);
+      }
+    } else if (c.layout === 'flat') {
+      // Sections with the same name are merged across projects.
+      pushUnsectioned(unsectioned(open), UNSECTIONED_KEY);
+      const merged = new Map();
+      for (const s of visible) {
+        const k = lower(s.name);
+        if (!merged.has(k)) merged.set(k, { name: s.name, keys: new Set() });
+        merged.get(k).keys.add(s.key);
+      }
+      for (const [k, m] of merged) pushSection(`flat:${k}`, m.name, open.filter((t) => m.keys.has(groupKey(t))));
+    } else {
+      // Nested: each project is a heading with its sections inside.
+      for (const p of multi) {
+        const pk = `project:${p.key}`;
+        const head = { kind: 'project', key: pk, name: p.name, header: true, items: [], collapsed: this._isCollapsed(pk, p.name) };
+        groups.push(head);
+        const start = groups.length;
+        const mine = open.filter((t) => t.projectKey === p.key);
+        pushUnsectioned(unsectioned(mine), `${UNSECTIONED_KEY}:${p.key}`, pk);
+        for (const s of visible.filter((x) => x.projectKey === p.key)) {
+          pushSection(s.key, s.name, mine.filter((t) => groupKey(t) === s.key), pk, [`${p.name}/${s.name}`]);
+        }
+        head.count = groups.slice(start).reduce((n, g) => n + g.items.length, 0);
+      }
     }
 
     const doneSorted = done
@@ -1384,15 +1561,32 @@ class NaturalLanguageTodoCard extends CardBase {
       .slice(0, c.completed_limit);
 
     const sectionName = new Map(snap.sections.map((s) => [s.key, s.name]));
-    const openCount = groups.reduce((n, g) => n + g.items.length, 0);
+    const projectName = new Map((snap.projects || []).map((p) => [p.key, p.name]));
+    const openCount = groups.reduce((n, g) => n + (g.kind === 'project' ? 0 : g.items.length), 0);
 
-    // max_items: show the first N open items in display order. Sections past
-    // the cut are hidden; "Show N more" reveals the rest.
+    // max_items: show the first N open items in display order, across
+    // projects. Groups past the cut are hidden; "Show N more" reveals them.
     let hiddenCount = 0;
     const limited = c.max_items > 0 && openCount > c.max_items;
     if (limited && !this._collapsed[EXPANDED_KEY]) {
       let left = c.max_items;
+      let project = null;
       for (const g of groups) {
+        if (g.kind === 'project') {
+          project = g;
+          if (left <= 0) {
+            g.cut = true;
+            hiddenCount += g.count;
+          }
+          continue;
+        }
+        if (project && g.parentKey === project.key) {
+          if (project.cut) {
+            g.cut = true;
+            continue;
+          }
+          if (project.collapsed) continue;
+        }
         if (left <= 0) {
           g.cut = true;
           hiddenCount += g.items.length;
@@ -1410,9 +1604,40 @@ class NaturalLanguageTodoCard extends CardBase {
       openCount,
       hiddenCount,
       limited,
+      multi: !!multi,
+      flat: !!multi && c.layout === 'flat',
       sectionName,
+      projectName,
+      notices: snap.notices || [],
       firstSection: visible[0]?.name,
     };
+  }
+
+  // Subtasks follow their parent, indented. A subtask whose parent isn't in
+  // the same group is shown on its own.
+  _nest(list, sorter) {
+    const byId = new Map(list.map((t) => [t.id, t]));
+    const kids = new Map();
+    const roots = [];
+    for (const t of list) {
+      if (t.parentId && t.parentId !== t.id && byId.has(t.parentId)) {
+        if (!kids.has(t.parentId)) kids.set(t.parentId, []);
+        kids.get(t.parentId).push(t);
+      } else {
+        roots.push(t);
+      }
+    }
+    const out = [];
+    const seen = new Set();
+    const visit = (t, depth) => {
+      if (seen.has(t.id)) return;
+      seen.add(t.id);
+      out.push(depth ? { ...t, _depth: Math.min(depth, 3) } : t);
+      for (const k of (kids.get(t.id) || []).sort(sorter)) visit(k, depth + 1);
+    };
+    for (const r of roots.sort(sorter)) visit(r, 0);
+    for (const t of list) visit(t, 0); // anything caught in a parent loop
+    return out;
   }
 
   _sorter() {
@@ -1431,11 +1656,11 @@ class NaturalLanguageTodoCard extends CardBase {
     return byOrder;
   }
 
-  _isCollapsed(key, name) {
+  _isCollapsed(key, ...names) {
     if (Object.prototype.hasOwnProperty.call(this._collapsed, key)) return this._collapsed[key];
     if (key === COMPLETED_KEY) return !!this._config.completed_collapsed;
     const initial = this._config.collapsed_sections.map((x) => lower(x));
-    return initial.includes(lower(key)) || (name !== undefined && initial.includes(lower(name)));
+    return initial.includes(lower(key)) || names.some((n) => n != null && n !== '' && initial.includes(lower(n)));
   }
 
   _loadCollapsed() {
@@ -1507,19 +1732,37 @@ class NaturalLanguageTodoCard extends CardBase {
 
   // --------------------------------------------------------------- render
 
-  _itemHtml(t, sectionName, showSection, canToggle) {
+  _tagsHtml(t) {
+    const c = this._config;
+    const tags = [];
+    // Todoist API priority: 4 is most urgent, shown as P1 in the apps.
+    if (c.show_priority && t.priority >= 2 && t.priority <= 4) {
+      tags.push(`<span class="tag p${5 - t.priority}">P${5 - t.priority}</span>`);
+    }
+    if (c.show_labels && t.labels?.length) {
+      for (const l of t.labels.slice(0, 3)) tags.push(`<span class="tag">@${esc(l)}</span>`);
+      if (t.labels.length > 3) tags.push(`<span class="tag">+${t.labels.length - 3}</span>`);
+    }
+    return tags.length ? `<span class="tags">${tags.join('')}</span>` : '';
+  }
+
+  // opts: { showSection, showProject, canToggle }
+  _itemHtml(t, d, opts) {
     const done = !!t._done;
-    const cls = ['item', done ? 'done' : '', t._busy ? 'busy' : ''].join(' ');
+    const cls = ['item', done ? 'done' : '', t._busy ? 'busy' : '', !done && t._depth ? `d${t._depth}` : ''].join(' ');
     const label = done ? `Mark ${t.content} as not done` : `Complete ${t.content}`;
     const due = done ? null : this._dueLabel(t.due);
     const dueHtml = due ? `<span class="due ${due.kind}">${esc(due.label)}</span>` : '';
-    const secHtml = showSection && t.sectionKey && sectionName.get(t.sectionKey)
-      ? `<span class="meta">${esc(sectionName.get(t.sectionKey))}</span>`
-      : '';
-    const box = t._temp || !canToggle
+    const meta = [
+      opts.showProject && t.projectKey ? d.projectName.get(t.projectKey) : null,
+      opts.showSection && t.sectionKey ? d.sectionName.get(t.sectionKey) : null,
+    ].filter(Boolean);
+    const metaHtml = meta.length ? `<span class="meta">${esc(meta.join(' · '))}</span>` : '';
+    const box = t._temp || !opts.canToggle
       ? `<span class="box"><span class="tick">${done ? ICON_TICK : ''}</span></span>`
       : `<button class="box" type="button" data-action="toggle" data-id="${esc(t.id)}" data-done="${done}" data-recurring="${!!t.recurring}" aria-label="${esc(label)}"><span class="tick">${ICON_TICK}</span></button>`;
-    return `<li class="${cls}">${box}<span class="text">${esc(t.content)}</span>${dueHtml}${secHtml}</li>`;
+    const tags = done ? '' : this._tagsHtml(t);
+    return `<li class="${cls}">${box}<span class="body"><span class="text">${esc(t.content)}</span>${tags}</span>${dueHtml}${metaHtml}</li>`;
   }
 
   _renderList(force) {
@@ -1547,14 +1790,23 @@ class NaturalLanguageTodoCard extends CardBase {
     const active = this.shadowRoot.activeElement;
     const focusKey = active?.dataset?.action ? [active.dataset.action, active.dataset.id ?? active.dataset.key] : null;
 
-    let html = '';
+    let html = d.notices.map((n) => `<div class="notice">${esc(n)}</div>`).join('');
+    const itemOpts = { showSection: false, showProject: d.flat, canToggle: caps.toggle };
+    let collapsedProject = null;
     for (const g of d.groups) {
-      html += '<div class="group">';
+      if (g.kind === 'project') {
+        collapsedProject = g.collapsed ? g.key : null;
+        html += `<button class="sec proj" type="button" data-action="collapse" data-key="${esc(g.key)}" aria-expanded="${!g.collapsed}">
+          <span class="sec-name">${esc(g.name)}</span><span class="pill">${g.count}</span>${ICON_CHEV}</button>`;
+        continue;
+      }
+      if (g.parentKey && g.parentKey === collapsedProject) continue;
+      html += `<div class="group${g.parentKey ? ' sub' : ''}">`;
       if (g.header) {
         html += `<button class="sec" type="button" data-action="collapse" data-key="${esc(g.key)}" aria-expanded="${!g.collapsed}">
           <span class="sec-name">${esc(g.name)}</span><span class="pill">${g.items.length}</span>${ICON_CHEV}</button>`;
       }
-      if (!g.collapsed) html += `<ul>${(g.shown || g.items).map((t) => this._itemHtml(t, d.sectionName, false, caps.toggle)).join('')}</ul>`;
+      if (!g.collapsed) html += `<ul>${(g.shown || g.items).map((t) => this._itemHtml(t, d, itemOpts)).join('')}</ul>`;
       html += '</div>';
     }
     if (d.hiddenCount) {
@@ -1567,12 +1819,13 @@ class NaturalLanguageTodoCard extends CardBase {
       const collapsed = this._isCollapsed(COMPLETED_KEY);
       html += `<div class="group"><button class="sec" type="button" data-action="collapse" data-key="${COMPLETED_KEY}" aria-expanded="${!collapsed}">
         <span class="sec-name">Completed</span><span class="pill">${d.done.length}</span>${ICON_CHEV}</button>`;
-      if (!collapsed) html += `<ul>${d.done.map((t) => this._itemHtml(t, d.sectionName, true, caps.toggle)).join('')}</ul>`;
+      const doneOpts = { showSection: true, showProject: d.multi, canToggle: caps.toggle };
+      if (!collapsed) html += `<ul>${d.done.map((t) => this._itemHtml(t, d, doneOpts)).join('')}</ul>`;
       html += '</div>';
     }
 
     if (!d.groups.length && !(c.show_completed && d.done.length)) {
-      html = `<div class="empty">Nothing on this list.${caps.add ? ' Tap + to add an item.' : ''}</div>`;
+      html += `<div class="empty">Nothing on this list.${caps.add ? ' Tap + to add an item.' : ''}</div>`;
     }
 
     this._$list.innerHTML = html;
@@ -1591,7 +1844,7 @@ class NaturalLanguageTodoCard extends CardBase {
     if (!el) return;
     if (el.dataset.action === 'collapse') {
       const key = el.dataset.key;
-      this._collapsed[key] = !this._isCollapsed(key, el.querySelector('.sec-name')?.textContent);
+      this._collapsed[key] = el.getAttribute('aria-expanded') === 'true';
       this._saveCollapsed();
       this._renderList(true);
     } else if (el.dataset.action === 'more') {
@@ -1632,6 +1885,11 @@ const EDITOR_LABELS = {
   mode: 'Where the list comes from',
   entities: 'To-do lists',
   project_id: 'Todoist project',
+  projects: 'Todoist projects',
+  layout: 'Layout',
+  default_project: 'Add new items to',
+  show_labels: 'Show labels',
+  show_priority: 'Show priority',
   title: 'Title',
   sort: 'Sort items',
   max_items: 'Show at most this many items (0 = all)',
@@ -1651,6 +1909,8 @@ const EDITOR_LABELS = {
 const EDITOR_HELPERS = {
   entities: 'Pick one list, or several to show each as a section.',
   project_id: 'Projects ticked in the Natural Language To-do Companion integration.',
+  projects: 'Projects ticked in the Natural Language To-do Companion integration. Pick several to show them in one card.',
+  default_project: 'Where items go when you don\'t type "/".',
   max_height: 'On sections dashboards you can also set the card size in the Layout tab.',
 };
 
@@ -1658,6 +1918,7 @@ const EDITOR_HELPERS = {
 const EDITOR_SIMPLE = [
   'title', 'sort', 'max_items', 'max_height', 'show_completed', 'completed_limit', 'due_display',
   'show_count', 'count_suffix', 'show_hint', 'add_timeout', 'hide_empty_sections', 'parse_dates', 'accent',
+  'show_labels', 'show_priority',
 ];
 
 class NaturalLanguageTodoCardEditor extends CardBase {
@@ -1704,6 +1965,7 @@ class NaturalLanguageTodoCardEditor extends CardBase {
   _mode(c) {
     if (c.source && c.source !== 'auto') return c.source;
     if (c.entity || (Array.isArray(c.entities) && c.entities.length)) return 'todo';
+    if (Array.isArray(c.projects) && c.projects.length) return 'companion';
     if (c.project_id) return CompanionSource.available(this._hass) ? 'companion' : 'todoist_bridge';
     return 'todo';
   }
@@ -1719,7 +1981,26 @@ class NaturalLanguageTodoCardEditor extends CardBase {
       schema.push({ name: 'entities', selector: { entity: { domain: 'todo', multiple: true } } });
     } else if (mode === 'companion' && this._projects?.length) {
       const options = this._projects.map((p) => ({ value: String(p.id), label: p.name }));
-      schema.push({ name: 'project_id', selector: { select: { mode: 'dropdown', options } } });
+      schema.push({ name: 'projects', selector: { select: { multiple: true, mode: 'list', options } } });
+      const chosen = this._projectIds(this._config);
+      if (chosen.length > 1) {
+        const name = (id) => this._projects.find((p) => String(p.id) === id)?.name || id;
+        schema.push(
+          {
+            name: 'layout',
+            selector: {
+              select: {
+                mode: 'dropdown',
+                options: [
+                  { value: 'nested', label: 'Each project with its sections' },
+                  { value: 'flat', label: 'Sections merged across projects' },
+                ],
+              },
+            },
+          },
+          { name: 'default_project', selector: { select: { mode: 'dropdown', options: chosen.map((id) => ({ value: id, label: name(id) })) } } },
+        );
+      }
     } else {
       schema.push({ name: 'project_id', selector: { text: {} } });
     }
@@ -1767,11 +2048,24 @@ class NaturalLanguageTodoCardEditor extends CardBase {
           { name: 'add_timeout', selector: { number: { min: 0, max: 600, step: 1, mode: 'box', unit_of_measurement: 's' } } },
           { name: 'hide_empty_sections', selector: { boolean: {} } },
           ...(mode === 'todo' ? [{ name: 'parse_dates', selector: { boolean: {} } }] : []),
+          ...(mode !== 'todo'
+            ? [
+                { name: 'show_labels', selector: { boolean: {} } },
+                { name: 'show_priority', selector: { boolean: {} } },
+              ]
+            : []),
           { name: 'accent', selector: { text: {} } },
         ],
       },
     );
     return schema;
+  }
+
+  _projectIds(c) {
+    return [
+      ...(c.project_id ? [String(c.project_id)] : []),
+      ...(Array.isArray(c.projects) ? c.projects : []).map((p) => String(p && typeof p === 'object' ? p.id : p)),
+    ].filter((id, i, all) => id && all.indexOf(id) === i);
   }
 
   _formData(mode) {
@@ -1783,7 +2077,11 @@ class NaturalLanguageTodoCardEditor extends CardBase {
       const list = [...(c.entity ? [c.entity] : []), ...(c.entities || []).map((e) => (typeof e === 'string' ? e : e?.entity))];
       data.entities = list.filter(Boolean);
     } else {
-      data.project_id = c.project_id ? String(c.project_id) : '';
+      const ids = this._projectIds(c);
+      data.project_id = ids[0] || '';
+      data.projects = ids;
+      data.layout = c.layout || 'nested';
+      data.default_project = c.default_project || ids[0] || '';
     }
     return data;
   }
@@ -1804,7 +2102,8 @@ class NaturalLanguageTodoCardEditor extends CardBase {
     const mode = this._mode(this._config);
     this._form.hass = this._hass;
     this._form.schema = this._schema(mode);
-    this._form.data = this._formData(mode);
+    this._lastData = this._formData(mode);
+    this._form.data = this._lastData;
   }
 
   _changed(value) {
@@ -1816,13 +2115,37 @@ class NaturalLanguageTodoCardEditor extends CardBase {
     delete cfg.source;
     if (mode === 'todo') {
       delete cfg.project_id;
+      delete cfg.projects;
+      delete cfg.layout;
+      delete cfg.default_project;
       // Keep any custom section names from the YAML.
       const named = new Map((old.entities || []).filter((e) => e && typeof e === 'object').map((e) => [e.entity, e]));
       const list = value.entities || [];
       if (list.length === 1 && !named.has(list[0])) cfg.entity = list[0];
       else if (list.length) cfg.entities = list.map((id) => named.get(id) || id);
+    } else if (mode === 'companion' && Array.isArray(value.projects) && this._projects?.length) {
+      // Keep any custom project names from the YAML.
+      const named = new Map((old.projects || []).filter((p) => p && typeof p === 'object').map((p) => [String(p.id), p]));
+      const list = value.projects.map(String);
+      delete cfg.project_id;
+      delete cfg.projects;
+      if (list.length === 1 && !named.has(list[0])) cfg.project_id = list[0];
+      else if (list.length) cfg.projects = list.map((id) => named.get(id) || id);
+      if (list.length > 1 && value.layout && value.layout !== 'nested') cfg.layout = value.layout;
+      else delete cfg.layout;
+      // Only keep a default the user chose, not the one the form was showing.
+      const chosen = old.default_project || (value.default_project !== this._lastData?.default_project ? value.default_project : '');
+      if (list.length > 1 && chosen && chosen !== list[0] && list.includes(chosen)) {
+        cfg.default_project = chosen;
+      } else {
+        delete cfg.default_project;
+      }
+      cfg.source = mode;
     } else {
       cfg.project_id = value.project_id || '';
+      delete cfg.projects;
+      delete cfg.layout;
+      delete cfg.default_project;
       cfg.source = mode;
     }
     for (const key of EDITOR_SIMPLE) {
