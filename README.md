@@ -172,6 +172,23 @@ Type `/` and a section's name to add to that section: `croissants tomorrow /Bake
 
 If the companion isn't installed, the card says so and links to it.
 
+**Already using the card with `entity: todo.…` (setup 2)?** Installing the companion doesn't change those cards: they still read the to-do entity, which has no sections. The card shows a tip until you switch it. Open the card's editor and choose **Todoist, with sections**, or change the YAML:
+
+```yaml
+# Before: setup 2, no sections
+type: custom:natural-language-todo-card
+entity: todo.weekly_food_shop
+```
+
+```yaml
+# After: setup 3, with sections
+type: custom:natural-language-todo-card
+source: companion
+project_id: 6Jf8VQXxpwv59GRH
+```
+
+The project ID is the code at the end of the project's web address in Todoist (`…/project/weekly-food-shop-6Jf8VQXxpwv59GRH`). The editor picks it for you.
+
 Tasks show their **subtasks** indented underneath, and their **priority** (P1 to P3) and **@labels** as small tags. Turn the tags off with `show_labels: false` or `show_priority: false`.
 
 ### Several projects in one card
@@ -277,6 +294,7 @@ Collapsed and expanded sections, and **Show more**, are remembered per device. T
 | Todoist: a server error or "unknown error" when adding | The Todoist integration can't reach Todoist. Look in **Settings → System → Logs** for Todoist errors such as `401 Unauthorized`, and reload or re-authenticate the integration in **Settings → Devices & services**. |
 | Todoist: an error about the section | That section doesn't exist in the Todoist project. Check the spelling, or use quotes for names with spaces. |
 | Todoist: an error about the project name | You've renamed the list in Home Assistant. Set `todoist_project:` to the name used in Todoist. |
+| Todoist sections don't show as groups | The card is reading the to-do entity (`entity: todo.…`), which has no sections. Switch the card to the companion: see [setup 3](#setup-3-todoist-with-sections). |
 | "This card needs the Natural Language To-do Companion integration" | Install the companion (setup 3), restart, and set it up. Or use `entity:` for setup 2 instead. |
 | A project "isn't ticked in the companion integration" | Open the companion in **Settings → Devices & services**, select **Configure** and tick the project. |
 | "Custom element doesn't exist" | Reload the browser. With a manual install, check the resource URL and type. |

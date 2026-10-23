@@ -69,6 +69,7 @@ const DUE_DISPLAY = ['all', 'soon', 'none'];
 const COMPLETED_KEY = '__completed';
 const UNSECTIONED_KEY = '__none';
 const EXPANDED_KEY = '__expanded';
+const TIP_KEY = '__tip_companion';
 const CSS_LENGTH = /^\d+(\.\d+)?(px|em|rem|vh|%)$/;
 
 const COMPANION_DOMAIN = 'natural_language_todo';
@@ -849,6 +850,12 @@ class TodoSource {
     return hass.entities?.[entityId]?.platform === 'todoist' && !!hass.services?.todoist?.new_task;
   }
 
+  // One Todoist list, read through its to-do entity, which has no sections,
+  // while the companion that does have them is installed.
+  companionTip(hass) {
+    return !this.multi && this._isTodoist(hass, this.lists[0].entity) && CompanionSource.available(hass);
+  }
+
   _name(hass, list) {
     return list.name || hass.states[list.entity]?.attributes?.friendly_name || list.entity;
   }
@@ -1037,6 +1044,9 @@ const STYLES = `
   .sec.proj .sec-name { font-size: 15px; font-weight: 600; }
   .group.sub .sec { padding-left: 14px; margin-top: 0; border-top-style: dotted; }
   .notice { font-size: 13px; padding: 8px 4px; color: var(--warning-color, #ff9800); }
+  .tip { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 4px; color: var(--secondary-text-color); }
+  .tip span { flex: 1; }
+  .tip button { min-height: 44px; padding: 0 8px; border: 0; background: none; color: var(--primary-color); font: inherit; cursor: pointer; }
 
   .item { display: flex; align-items: center; gap: 6px; min-height: 44px; }
   .box { width: 44px; height: 44px; margin-left: -8px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
@@ -1609,6 +1619,7 @@ class NaturalLanguageTodoCard extends CardBase {
       sectionName,
       projectName,
       notices: snap.notices || [],
+      tip: !this._collapsed[TIP_KEY] && !!this._source.companionTip?.(this._hass),
       firstSection: visible[0]?.name,
     };
   }
@@ -1791,6 +1802,10 @@ class NaturalLanguageTodoCard extends CardBase {
     const focusKey = active?.dataset?.action ? [active.dataset.action, active.dataset.id ?? active.dataset.key] : null;
 
     let html = d.notices.map((n) => `<div class="notice">${esc(n)}</div>`).join('');
+    if (d.tip) {
+      html += `<div class="tip"><span>Todoist sections are available: open this card's editor and choose <b>Todoist, with sections</b>.</span>
+        <button type="button" data-action="tip">Hide</button></div>`;
+    }
     const itemOpts = { showSection: false, showProject: d.flat, canToggle: caps.toggle };
     let collapsedProject = null;
     for (const g of d.groups) {
@@ -1845,6 +1860,10 @@ class NaturalLanguageTodoCard extends CardBase {
     if (el.dataset.action === 'collapse') {
       const key = el.dataset.key;
       this._collapsed[key] = el.getAttribute('aria-expanded') === 'true';
+      this._saveCollapsed();
+      this._renderList(true);
+    } else if (el.dataset.action === 'tip') {
+      this._collapsed[TIP_KEY] = true;
       this._saveCollapsed();
       this._renderList(true);
     } else if (el.dataset.action === 'more') {

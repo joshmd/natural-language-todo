@@ -870,6 +870,41 @@ await run('XSS: hostile project names, labels and section paths never run', asyn
   assert.equal(out.items, 3);
 });
 
+await run('Todoist entity with the companion installed: tip to switch, hidden once dismissed', async (page) => {
+  const out = await page.evaluate(async () => {
+    const make = (companion) => makeHass({
+      states: { 'todo.weekly_food_shop': { state: '1', last_updated: '1', attributes: { friendly_name: 'Weekly Food Shop', supported_features: 119 } } },
+      entities: { 'todo.weekly_food_shop': { entity_id: 'todo.weekly_food_shop', platform: 'todoist' } },
+      services: { todoist: { new_task: {} } },
+      items: { 'todo.weekly_food_shop': [{ uid: '1', summary: 'Eggs', status: 'needs_action' }] },
+      companion,
+    });
+    mount({ entity: 'todo.weekly_food_shop' }, make(null));
+    await tick();
+    const without = qa('.tip').length;
+    card.remove();
+    mount({ entity: 'todo.weekly_food_shop' }, make({}));
+    await tick();
+    const tip = q('.tip span')?.textContent;
+    q('button[data-action="tip"]').click();
+    const afterHide = qa('.tip').length;
+    card.remove();
+    mount({ entity: 'todo.weekly_food_shop' }, make({}));
+    await tick();
+    const afterReload = qa('.tip').length;
+    // A non-Todoist list never gets the tip.
+    card.remove();
+    mount({ entity: 'todo.local' }, makeHass({ states: { 'todo.local': { state: '0', last_updated: '1', attributes: LOCAL } }, items: { 'todo.local': [] }, companion: {} }));
+    await tick();
+    return { without, tip, afterHide, afterReload, local: qa('.tip').length, items: texts('.item') };
+  });
+  assert.equal(out.without, 0, 'no tip without the companion');
+  assert.match(out.tip, /Todoist sections are available: open this card's editor and choose Todoist, with sections/);
+  assert.equal(out.afterHide, 0);
+  assert.equal(out.afterReload, 0, 'dismissal remembered');
+  assert.equal(out.local, 0);
+});
+
 await browser.close();
 server.close();
 
