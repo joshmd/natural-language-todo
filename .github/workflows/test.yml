@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned: the Playwright version in package-lock.json can't install
+    # Chromium on newer Ubuntu images.
+    runs-on: ubuntu-24.04
     steps:
       # Pinned to commits so an upstream change cannot alter this workflow.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
