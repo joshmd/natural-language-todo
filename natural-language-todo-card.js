@@ -19,7 +19,7 @@
  * The card never holds an API token. No build step, no dependencies.
  */
 
-const CARD_VERSION = '0.4.0';
+const CARD_VERSION = '0.5.0';
 
 const DEFAULTS = {
   title: '',
@@ -43,6 +43,7 @@ const DEFAULTS = {
   // shared
   source: 'auto', // auto | todo | companion | todoist_bridge
   sort: 'manual', // manual | due | alphabetical
+  date_dividers: false, // with sort: due, a line above each new day
   max_items: 0, // open items shown before "Show more"; 0 = all
   max_height: '', // e.g. 400px; the list scrolls inside the card
   show_completed: false,
@@ -1034,6 +1035,11 @@ const STYLES = `
           color: var(--tsc-accent); font-size: 14px; font-weight: 500; text-align: left; padding: 10px 4px; }
   .empty a { color: var(--tsc-accent); }
   ul { list-style: none; margin: 0; padding: 0; }
+  .day { display: flex; align-items: center; gap: 8px; margin: 8px 0 2px; font-size: 12px; font-weight: 600;
+         color: var(--secondary-text-color); }
+  .day::after { content: ''; flex: 1; height: 1px; background: var(--divider-color); }
+  .day.late { color: var(--error-color, #db4437); }
+  ul > .day:first-child { margin-top: 2px; }
   .sec { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 10px 4px 4px; margin-top: 6px;
          border-top: 1px solid var(--divider-color); color: var(--secondary-text-color); text-align: left; }
   .sec-name { flex: 1; font-size: 13px; font-weight: 500; }
@@ -1776,6 +1782,52 @@ class NaturalLanguageTodoCard extends CardBase {
     return `<li class="${cls}">${box}<span class="body"><span class="text">${esc(t.content)}</span>${tags}</span>${dueHtml}${metaHtml}</li>`;
   }
 
+  // The day a due date falls on, as the label of its date divider.
+  _dayLabel(due) {
+    const raw = due?.datetime || due?.date;
+    if (!raw) return 'No date';
+    const s = String(raw);
+    let when;
+    if (s.length > 10) {
+      when = new Date(s);
+    } else {
+      const [y, m, day] = s.split('-').map(Number);
+      when = new Date(y, m - 1, day);
+    }
+    if (isNaN(when)) return 'No date';
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const thatDay = new Date(when);
+    thatDay.setHours(0, 0, 0, 0);
+    const diff = Math.round((thatDay - today) / 86400000);
+    if (diff < 0) return 'Overdue';
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Tomorrow';
+    const locale = this._locale();
+    if (diff < 7) return when.toLocaleDateString(locale, { weekday: 'long' });
+    return when.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
+  }
+
+  // With due-date sorting, date_dividers puts a line above each new day.
+  // Subtasks stay with their parent, so only top-level items start a day.
+  _itemsHtml(items, d, opts) {
+    const dividers = this._config.date_dividers && this._config.sort === 'due';
+    let day = null;
+    return items
+      .map((t) => {
+        let line = '';
+        if (dividers && !t._depth) {
+          const label = this._dayLabel(t.due);
+          if (label !== day) {
+            line = `<li class="day${label === 'Overdue' ? ' late' : ''}" role="presentation"><span>${esc(label)}</span></li>`;
+          }
+          day = label;
+        }
+        return line + this._itemHtml(t, d, opts);
+      })
+      .join('');
+  }
+
   _renderList(force) {
     if (!this._built || !this._hass) return;
     if (force) this._sig = '';
@@ -1821,7 +1873,7 @@ class NaturalLanguageTodoCard extends CardBase {
         html += `<button class="sec" type="button" data-action="collapse" data-key="${esc(g.key)}" aria-expanded="${!g.collapsed}">
           <span class="sec-name">${esc(g.name)}</span><span class="pill">${g.items.length}</span>${ICON_CHEV}</button>`;
       }
-      if (!g.collapsed) html += `<ul>${(g.shown || g.items).map((t) => this._itemHtml(t, d, itemOpts)).join('')}</ul>`;
+      if (!g.collapsed) html += `<ul>${this._itemsHtml(g.shown || g.items, d, itemOpts)}</ul>`;
       html += '</div>';
     }
     if (d.hiddenCount) {
@@ -1843,12 +1895,16 @@ class NaturalLanguageTodoCard extends CardBase {
       html += `<div class="empty">Nothing on this list.${caps.add ? ' Tap + to add an item.' : ''}</div>`;
     }
 
+    // Keep the view where it was: a ticked item moves (to Completed, or to its
+    // next date if it repeats), and focusing it would scroll it into view.
+    const scrollTop = this._$list.scrollTop;
     this._$list.innerHTML = html;
+    this._$list.scrollTop = scrollTop;
 
     if (focusKey) {
       const [action, id] = focusKey;
       const attr = action === 'toggle' ? 'data-id' : 'data-key';
-      this._$list.querySelector(`[data-action="${CSS.escape(action)}"][${attr}="${CSS.escape(id)}"]`)?.focus();
+      this._$list.querySelector(`[data-action="${CSS.escape(action)}"][${attr}="${CSS.escape(id)}"]`)?.focus({ preventScroll: true });
     }
   }
 
@@ -1911,6 +1967,7 @@ const EDITOR_LABELS = {
   show_priority: 'Show priority',
   title: 'Title',
   sort: 'Sort items',
+  date_dividers: 'Show a line between days',
   max_items: 'Show at most this many items (0 = all)',
   max_height: 'Maximum list height, e.g. 400px (blank = no limit)',
   show_completed: 'Show completed items',
@@ -1937,7 +1994,7 @@ const EDITOR_HELPERS = {
 const EDITOR_SIMPLE = [
   'title', 'sort', 'max_items', 'max_height', 'show_completed', 'completed_limit', 'due_display',
   'show_count', 'count_suffix', 'show_hint', 'add_timeout', 'hide_empty_sections', 'parse_dates', 'accent',
-  'show_labels', 'show_priority',
+  'show_labels', 'show_priority', 'date_dividers',
 ];
 
 class NaturalLanguageTodoCardEditor extends CardBase {
@@ -2038,6 +2095,7 @@ class NaturalLanguageTodoCardEditor extends CardBase {
           },
         },
       },
+      ...((this._config.sort || DEFAULTS.sort) === 'due' ? [{ name: 'date_dividers', selector: { boolean: {} } }] : []),
       { name: 'max_items', selector: { number: { min: 0, max: 200, step: 1, mode: 'box' } } },
       { name: 'max_height', selector: { text: {} } },
       {

@@ -54,7 +54,7 @@ HACS registers the dashboard resource for you.
 1. Download `natural-language-todo-card.js` from the [latest release](https://github.com/joshmd/natural-language-todo/releases/latest).
 2. Copy it to `/config/www/natural-language-todo-card.js`.
 3. Go to **Settings** → **Dashboards** → three-dot menu → **Resources** → **Add resource**:
-   - URL: `/local/natural-language-todo-card.js?v=0.4.0`
+   - URL: `/local/natural-language-todo-card.js?v=0.5.0`
    - Resource type: **JavaScript module**
 4. Reload your browser. Change the `?v=` number whenever you update the file, or browsers keep using the old copy.
 
@@ -246,6 +246,7 @@ Most options can be set in the visual editor. These are YAML only: `hide_section
 | `show_priority` | `true` | Setup 3: show a task's priority (P1 to P3) as a tag |
 | `title` | none | Card heading |
 | `sort` | `manual` | `due` (overdue first, then by date and time, undated last), `alphabetical`, or `manual` (the list's own order). Sorting applies within each section. New cards from the picker start with `due` |
+| `date_dividers` | `false` | With `sort: due`, a line above each new day: Overdue, Today, Tomorrow, the weekday, then the date, and No date. In the editor: **Show a line between days** |
 | `max_items` | `0` | Show at most this many open items, then a **Show more** button. `0` shows everything |
 | `max_height` | none | Maximum height of the list, such as `400px`, `30em` or `50vh`. The list scrolls inside the card |
 | `show_completed` | `false` | Show a Completed group, if the list keeps completed items |

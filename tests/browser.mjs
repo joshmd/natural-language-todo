@@ -905,6 +905,119 @@ await run('Todoist entity with the companion installed: tip to switch, hidden on
   assert.equal(out.local, 0);
 });
 
+await run('date dividers: a line above each new day, only when asked and sorted by due date', async (page) => {
+  const out = await page.evaluate(async () => {
+    const pad = (n) => String(n).padStart(2, '0');
+    const at = (o) => { const d = new Date(); d.setDate(d.getDate() + o); return d; };
+    const day = (o) => { const d = at(o); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+    const data = { P: { project: { id: 'P', name: 'P' }, sections: [], completed: [], tasks: [
+      { id: 'z', content: 'Someday' },
+      { id: 'w', content: 'Party', due: { date: day(9) } },
+      { id: 'v', content: 'Avocados', due: { date: day(3) } },
+      { id: 't', content: 'Milk', due: { date: day(1) } },
+      { id: 'b', content: 'Bread', due: { date: day(0), datetime: `${day(0)}T23:59:00` } },
+      { id: 'c', content: 'Slice it', parent_id: 'b', due: { date: day(2) } },
+      { id: 'o', content: 'Library books', due: { date: day(-2) } },
+      { id: 'o2', content: 'Dentist', due: { date: day(-1) } },
+    ] } };
+    const rows = () => qa('ul > li').map((li) => (li.classList.contains('day') ? `-- ${li.textContent}${li.classList.contains('late') ? ' (late)' : ''}` : li.querySelector('.text').textContent));
+    mount({ project_id: 'P', sort: 'due', date_dividers: true }, makeHass({ companion: data }));
+    await tick();
+    const on = rows();
+    const chip = q('.item:nth-of-type(1) .due')?.textContent;
+    const milkChip = qa('.item').find((li) => li.textContent.includes('Milk')).querySelector('.due').textContent;
+    card.remove();
+    mount({ project_id: 'P', sort: 'due' }, makeHass({ companion: data }));
+    await tick();
+    const off = qa('.day').length;
+    card.remove();
+    mount({ project_id: 'P', sort: 'alphabetical', date_dividers: true }, makeHass({ companion: data }));
+    await tick();
+    const alpha = qa('.day').length;
+    return {
+      on, off, alpha, milkChip,
+      weekday: at(3).toLocaleDateString('en-GB', { weekday: 'long' }),
+      date: at(9).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }),
+    };
+  });
+  assert.deepEqual(out.on, [
+    '-- Overdue (late)', 'Library books', 'Dentist',
+    '-- Today', 'Bread', 'Slice it',
+    '-- Tomorrow', 'Milk',
+    `-- ${out.weekday}`, 'Avocados',
+    `-- ${out.date}`, 'Party',
+    '-- No date', 'Someday',
+  ], 'a subtask stays under its parent without a divider of its own');
+  assert.equal(out.milkChip, 'Tomorrow', 'due chips are unchanged');
+  assert.equal(out.off, 0, 'off by default');
+  assert.equal(out.alpha, 0, 'only with due-date sorting');
+});
+
+await run('ticking an item off keeps the view where it is', async (page) => {
+  const out = await page.evaluate(async () => {
+    const pad = (n) => String(n).padStart(2, '0');
+    const day = (o) => { const d = new Date(); d.setDate(d.getDate() + o); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+    const tasks = Array.from({ length: 14 }, (_, i) => ({ id: `t${i}`, content: `Task ${i}`, order: i, due: { date: day(i) } }));
+    tasks[4] = { ...tasks[4], content: 'Water plants', due: { date: day(4), is_recurring: true } };
+    const data = { project: { id: 'P', name: 'P' }, sections: [], completed: [], tasks };
+    const hass = makeHass({ companion: { P: data } });
+    let push;
+    const subscribe = hass.connection.subscribeMessage.bind(hass.connection);
+    hass.connection.subscribeMessage = (cb, msg) => {
+      if (msg.type === 'natural_language_todo/subscribe') push = cb;
+      return subscribe(cb, msg);
+    };
+    mount({ project_id: 'P', sort: 'due', max_height: '200px', show_completed: true, completed_collapsed: false }, hass);
+    await tick();
+    const list = q('.list');
+    const tickOff = async (id) => {
+      const box = q(`button[data-action="toggle"][data-id="${id}"]`);
+      box.focus({ preventScroll: true });
+      box.click();
+      await tick();
+    };
+    // A repeating task: Todoist gives it its next date, so it moves to the end.
+    list.scrollTop = 120;
+    const before = list.scrollTop;
+    await tickOff('t4');
+    push({ ...data, tasks: tasks.map((t) => (t.id === 't4' ? { ...t, due: { date: day(30), is_recurring: true } } : t)) });
+    await tick();
+    const afterRecurring = list.scrollTop;
+    // A one-off task: it moves down to Completed.
+    await tickOff('t2');
+    push({ ...data, tasks: tasks.filter((t) => t.id !== 't2'), completed: [{ ...tasks[2], completed_at: new Date().toISOString() }] });
+    await tick();
+    return { before, afterRecurring, afterOneOff: list.scrollTop, focused: card.shadowRoot.activeElement?.dataset?.id };
+  });
+  assert.ok(out.before > 0, 'the list was scrolled');
+  assert.equal(out.afterRecurring, out.before, 'repeating task: no jump');
+  assert.equal(out.afterOneOff, out.before, 'one-off task: no jump');
+  assert.equal(out.focused, 't2', 'keyboard focus stays on the ticked item');
+});
+
+await run('editor: the day line option only shows with due-date sorting', async (page) => {
+  const out = await page.evaluate(async () => {
+    customElements.define('ha-form', class extends HTMLElement {});
+    const editor = document.createElement(customElements.get('natural-language-todo-card').getConfigElement().localName);
+    const changes = [];
+    editor.addEventListener('config-changed', (e) => changes.push(e.detail.config));
+    document.body.appendChild(editor);
+    editor.hass = makeHass();
+    editor.setConfig({ type: 'custom:natural-language-todo-card', entity: 'todo.a' });
+    await tick();
+    const form = editor.querySelector('ha-form');
+    const names = () => form.schema.map((f) => f.name);
+    const manual = names().includes('date_dividers');
+    form.dispatchEvent(new CustomEvent('value-changed', { detail: { value: { ...form.data, sort: 'due' } } }));
+    const due = names().includes('date_dividers');
+    form.dispatchEvent(new CustomEvent('value-changed', { detail: { value: { ...form.data, date_dividers: true } } }));
+    return { manual, due, saved: changes.at(-1) };
+  });
+  assert.equal(out.manual, false);
+  assert.equal(out.due, true);
+  assert.deepEqual(out.saved, { type: 'custom:natural-language-todo-card', entity: 'todo.a', sort: 'due', date_dividers: true });
+});
+
 await browser.close();
 server.close();
 
